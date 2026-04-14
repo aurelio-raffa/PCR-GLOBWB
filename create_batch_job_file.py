@@ -21,6 +21,7 @@ job_template = f"""#!/bin/sh
 #BSUB -P {{{PROJECT_CODE}}}                         #project code
 module load anaconda
 source activate {{{CONDA_ENV}}}
+cd ./model
 python3 deterministic_runner.py {{{CONFIG_YAML_PATH}}}
 """
 
