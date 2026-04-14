@@ -13,7 +13,7 @@ CONFIG_YAML_PATH = 'config'
 
 job_template = f"""#!/bin/sh
 #BSUB -n {{{N_CORES}}}                              #number of requested cores
-#BSUB -R rusage[ptile={{{TILE}}}]                   #host resource requirements
+#BSUB -R span[ptile={{{TILE}}}]                   #host resource requirements
 #BSUB -M {{{MEM_LIMIT}}}                            #per-job/host mem limit
 #BSUB -q {{{JOB_QUEUE}}}                            #queue
 #BSUB -o {{{WORKING_DIR}}}/logfile.%J.txt           #output logs
