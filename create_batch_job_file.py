@@ -8,6 +8,7 @@ MEM_LIMIT = 'mem'
 JOB_QUEUE = 'jq'
 WORKING_DIR = 'wd'
 PROJECT_CODE = 'pc'
+CONDA_ENV = 'conda_env'
 CONFIG_YAML_PATH = 'config'
 
 job_template = f"""#!/bin/sh
@@ -18,7 +19,8 @@ job_template = f"""#!/bin/sh
 #BSUB -o {{{WORKING_DIR}}}/logfile.%J.txt           #output logs
 #BSUB -e {{{WORKING_DIR}}}/errfile.%J.txt           #error logs
 #BSUB -P {{{PROJECT_CODE}}}                         #project code
-cd ./model
+module load anaconda
+source activate {{{CONDA_ENV}}}
 python3 deterministic_runner.py {{{CONFIG_YAML_PATH}}}
 """
 
@@ -30,6 +32,7 @@ parser.add_argument(f"--{MEM_LIMIT}")
 parser.add_argument(f"--{JOB_QUEUE}")
 parser.add_argument(f"--{WORKING_DIR}")
 parser.add_argument(f"--{PROJECT_CODE}")
+parser.add_argument(f"--{CONDA_ENV}")
 parser.add_argument(f"--{CONFIG_YAML_PATH}")
 
 
