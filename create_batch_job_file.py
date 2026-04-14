@@ -3,7 +3,7 @@ from datetime import datetime
 
 
 N_CORES = 'nc'
-REQ_MEM = 'rmem'
+TILE = 'tile'
 MEM_LIMIT = 'mem'
 JOB_QUEUE = 'jq'
 WORKING_DIR = 'wd'
@@ -13,7 +13,7 @@ CONFIG_YAML_PATH = 'config'
 
 job_template = f"""#!/bin/sh
 #BSUB -n {{{N_CORES}}}                              #number of requested cores
-#BSUB -R rusage[mem={{{REQ_MEM}}}]                  #memory host resource requirements
+#BSUB -R rusage[ptile={{{TILE}}}]                   #host resource requirements
 #BSUB -M {{{MEM_LIMIT}}}                            #per-job/host mem limit
 #BSUB -q {{{JOB_QUEUE}}}                            #queue
 #BSUB -o {{{WORKING_DIR}}}/logfile.%J.txt           #output logs
@@ -27,7 +27,7 @@ python3 deterministic_runner.py {{{CONFIG_YAML_PATH}}}
 
 parser = argparse.ArgumentParser()
 parser.add_argument(f"--{N_CORES}")
-parser.add_argument(f"--{REQ_MEM}")
+parser.add_argument(f"--{TILE}")
 parser.add_argument(f"--{MEM_LIMIT}")
 parser.add_argument(f"--{JOB_QUEUE}")
 parser.add_argument(f"--{WORKING_DIR}")
