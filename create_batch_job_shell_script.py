@@ -8,7 +8,7 @@ MEM_LIMIT = 'mem'
 JOB_QUEUE = 'jq'
 WORKING_DIR = 'wd'
 PROJECT_CODE = 'pc'
-CONDA_ENV = 'pcrglobwb_python3'
+CONDA_ENV = 'conda_env'
 CONFIG_YAML_PATH = 'config'
 
 job_template = f"""#!/bin/sh
