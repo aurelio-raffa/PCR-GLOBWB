@@ -22,7 +22,7 @@ job_template = f"""#!/bin/sh
 module load anaconda
 source activate {{{CONDA_ENV}}}
 cd ./model
-python3 deterministic_runner.py {{{CONFIG_YAML_PATH}}}
+python3 deterministic_runner.py ../{{{CONFIG_YAML_PATH}}}
 """
 
 
