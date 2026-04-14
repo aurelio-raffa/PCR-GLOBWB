@@ -16,8 +16,8 @@ job_template = f"""#!/bin/sh
 #BSUB -R rusage[mem={{{REQ_MEM}}}]"                 #memory host resource requirements
 #BSUB -M {{{MEM_LIMIT}}}                            #per-job/host mem limit
 #BSUB -q {{{JOB_QUEUE}}}                            #queue
-#BSUB -o /{{{WORKING_DIR}}}/logfile.%J.txt          #output logs
-#BSUB -e /{{{WORKING_DIR}}}/errfile.%J.txt          #error logs
+#BSUB -o {{{WORKING_DIR}}}/logfile.%J.txt          #output logs
+#BSUB -e {{{WORKING_DIR}}}/errfile.%J.txt          #error logs
 #BSUB -P {{{PROJECT_CODE}}}                         #project code
 module load anaconda
 conda activate {{{CONDA_ENV}}}
@@ -39,5 +39,5 @@ parser.add_argument(f"--{CONFIG_YAML_PATH}")
 if __name__ == "__main__":
     args = parser.parse_args()
 
-    with open(f'job_PCR_GLOBWB{datetime.now().strftime("%y%m%d%H%M")}.sh', 'w') as handle:
+    with open(f'job_PCR_GLOBWB{datetime.now().strftime("%y%m%d%H%M")}.lsf', 'w') as handle:
         handle.write(job_template.format(**vars(args)))
