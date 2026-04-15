@@ -24,7 +24,7 @@ if __name__ == "__main__":
     unmapped = set()
     for pth, ext in links:
         full_pth = os.path.join(args.data_ph, args.inp_dir, f'{pth}.{ext}')
-        dir_pth = os.path.join(args.data_ph, args.inp_dir, pth)
+        dir_pth = os.path.join(args.data_ph, args.inp_dir, *os.path.split(pth)[:-1])
         if os.path.exists(full_pth):
             unchanged.add(pth)
         elif sum(
