@@ -21,8 +21,7 @@ job_template = f"""#!/bin/sh
 #BSUB -P {{{PROJECT_CODE}}}                         #project code
 module load anaconda
 source activate {{{CONDA_ENV}}}
-cd ./model
-python3 deterministic_runner.py ../{{{CONFIG_YAML_PATH}}}
+python3 model/deterministic_runner.py {{{CONFIG_YAML_PATH}}}
 """
 
 
@@ -40,5 +39,9 @@ parser.add_argument(f"--{CONFIG_YAML_PATH}")
 if __name__ == "__main__":
     args = parser.parse_args()
 
-    with open(f'job_PCR_GLOBWB{datetime.now().strftime("%y%m%d%H%M")}.lsf', 'w') as handle:
+    filename = f'job_{datetime.now().strftime("%y%m%d%H%M")}.lsf'
+
+    with open(filename, 'w') as handle:
         handle.write(job_template.format(**vars(args)))
+
+    print(filename)
