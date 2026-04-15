@@ -1,0 +1,76 @@
+Of the 92 paths in under global_30min/ in ./config/setup_30min.ini:
+-> 26 exact matches found;
+-> 12 found under a different extension;
+-> 0 have multiple incompatible extensions;
+-> 53 have not been found under any extension.
+
+Recovered File Mapping:
+- global_30min/waterUse/irrigation/irrigation_efficiency/efficiency.nc: global_30min/waterUse/irrigation/irrigation_efficiency/efficiency.map
+- global_30min/waterUse/abstraction_zones/abstraction_zones_60min_30min.nc: global_30min/waterUse/abstraction_zones/abstraction_zones_60min_30min.map
+- global_30min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_SWFRAC.nc: global_30min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_SWFRAC.map
+- global_30min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_QUAL.nc: global_30min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_QUAL.map
+- global_30min/waterUse/source_partitioning/surface_water_fraction_for_non_irrigation/max_city_sw_fraction.nc: global_30min/waterUse/source_partitioning/surface_water_fraction_for_non_irrigation/max_city_sw_fraction.map
+- global_30min/groundwater/aquifer_thickness_estimate/thickness_30min.nc: global_30min/groundwater/aquifer_thickness_estimate/thickness_30min.map
+- global_30min/waterUse/abstraction_zones/abstraction_zones_30min_30min.nc: global_30min/waterUse/abstraction_zones/abstraction_zones_30min_30min.map
+- global_30min/routing/ldd_and_cell_area/lddsound_30min.nc: global_30min/routing/ldd_and_cell_area/lddsound_30min.map
+- global_30min/routing/ldd_and_cell_area/cellarea30min.nc: global_30min/routing/ldd_and_cell_area/cellarea30min.map
+- global_30min/routing/channel_properties/channel_gradient.nc: global_30min/routing/channel_properties/channel_gradient.map
+- global_30min/routing/channel_properties/bankfull_depth.nc: global_30min/routing/channel_properties/bankfull_depth.map
+- global_30min/routing/channel_properties/bankfull_width.nc: global_30min/routing/channel_properties/bankfull_width.map
+
+Possible Additional Mappings:
+
+Not found:
+- global_30min/meteo/forcing/daily_precipitation_cru_era-interim_1979_to_2010.nc			# no file of this name (net of extension) exists in directory
+- global_30min/meteo/forcing/daily_temperature_cru_era-interim_1979_to_2010.nc			# no file of this name (net of extension) exists in directory
+- global_30min/meteo/forcing/daily_referencePotET_cru_era-interim_1979_to_2010.nc			# no file of this name (net of extension) exists in directory
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interceptStor_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowCoverSWE_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowFreeWater_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/topWaterLayer_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storUpp_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storLow_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interflow_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interceptStor_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowCoverSWE_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowFreeWater_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/topWaterLayer_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storUpp_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storLow_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interflow_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interceptStor_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowCoverSWE_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowFreeWater_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/topWaterLayer_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storUpp_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storLow_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interflow_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interceptStor_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowCoverSWE_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/snowFreeWater_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/topWaterLayer_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storUpp_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storLow_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/interflow_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storGroundwater_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/storGroundwaterFossil_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgNonFossilGroundwaterAllocationLong_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgNonFossilGroundwaterAllocationShort_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgTotalGroundwaterAbstraction_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgTotalGroundwaterAllocationLong_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgTotalGroundwaterAllocationShort_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/relativeGroundwaterHead_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/baseflow_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/routing/channel_properties/dzRel%04d.nc			# no matching wildcard found
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/waterBodyStorage_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/channelStorage_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/readAvlChannelStorage_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgDischargeLong_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgDischargeShort_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/m2tDischargeLong_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgBaseflowLong_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/riverbedExchange_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/subDischarge_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgLakeReservoirInflowShort_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/avgLakeReservoirOutflowLong_1999-12-31.nc			# parent directory of file does not exists
+- global_30min/initialConditions/non-natural/consistent_run_201903XX/1999/timestepsToAvgDischarge_1999-12-31.nc			# parent directory of file does not exists

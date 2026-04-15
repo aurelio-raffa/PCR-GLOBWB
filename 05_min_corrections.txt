@@ -1,0 +1,85 @@
+Of the 93 paths in under global_05min/ in ./config/setup_05min.ini:
+-> 18 exact matches found;
+-> 24 found under a different extension;
+-> 0 have multiple incompatible extensions;
+-> 50 have not been found under any extension.
+
+Recovered File Mapping:
+- global_05min/meteo/downscaling_from_30min/uniqueIds_30min.nc: global_05min/meteo/downscaling_from_30min/uniqueIds_30min.map
+- global_05min/meteo/downscaling_from_30min/gtopo05min.nc: global_05min/meteo/downscaling_from_30min/gtopo05min.map
+- global_05min/meteo/downscaling_from_30min/temperature_slope.nc: global_05min/meteo/downscaling_from_30min/temperature_slope.nc
+- global_05min/meteo/downscaling_from_30min/precipitation_slope.nc: global_05min/meteo/downscaling_from_30min/precipitation_slope.nc
+- global_05min/meteo/downscaling_from_30min/temperature_correl.nc: global_05min/meteo/downscaling_from_30min/temperature_correl.nc
+- global_05min/meteo/downscaling_from_30min/precipitation_correl.nc: global_05min/meteo/downscaling_from_30min/precipitation_correl.nc
+- global_05min/waterUse/abstraction_zones/abstraction_zones_60min_05min.nc: global_05min/waterUse/abstraction_zones/abstraction_zones_60min_05min.map
+- global_05min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_SWFRAC.nc: global_05min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_SWFRAC.map
+- global_05min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_QUAL.nc: global_05min/waterUse/source_partitioning/surface_water_fraction_for_irrigation/AEI_QUAL.map
+- global_05min/landSurface/landCover/naturalTall/vegf_tall.nc: global_05min/landSurface/landCover/naturalTall/vegf_tall.map
+- global_05min/landSurface/landCover/naturalTall/rfrac1_tall.nc: global_05min/landSurface/landCover/naturalTall/rfrac1_tall.map
+- global_05min/landSurface/landCover/naturalTall/rfrac2_tall.nc: global_05min/landSurface/landCover/naturalTall/rfrac2_tall.map
+- global_05min/landSurface/landCover/naturalShort/vegf_short.nc: global_05min/landSurface/landCover/naturalShort/vegf_short.map
+- global_05min/landSurface/landCover/naturalShort/rfrac1_short.nc: global_05min/landSurface/landCover/naturalShort/rfrac1_short.map
+- global_05min/landSurface/landCover/naturalShort/rfrac2_short.nc: global_05min/landSurface/landCover/naturalShort/rfrac2_short.map
+- global_05min/landSurface/landCover/irrPaddy/fractionPaddy.nc: global_05min/landSurface/landCover/irrPaddy/fractionPaddy.map
+- global_05min/landSurface/landCover/irrNonPaddy/fractionNonPaddy.nc: global_05min/landSurface/landCover/irrNonPaddy/fractionNonPaddy.map
+- global_05min/groundwater/aquifer_thickness_estimate/thickness_05min.nc: global_05min/groundwater/aquifer_thickness_estimate/thickness_05min.map
+- global_05min/waterUse/abstraction_zones/abstraction_zones_30min_05min.nc: global_05min/waterUse/abstraction_zones/abstraction_zones_30min_05min.map
+- global_05min/routing/ldd_and_cell_area/lddsound_05min.nc: global_05min/routing/ldd_and_cell_area/lddsound_05min.map
+- global_05min/routing/ldd_and_cell_area/cellsize05min.correct.nc: global_05min/routing/ldd_and_cell_area/cellsize05min.correct.map
+- global_05min/routing/channel_properties/channel_gradient.nc: global_05min/routing/channel_properties/channel_gradient.map
+- global_05min/routing/channel_properties/bankfull_depth.nc: global_05min/routing/channel_properties/bankfull_depth.map
+- global_05min/routing/channel_properties/bankfull_width.nc: global_05min/routing/channel_properties/bankfull_width.map
+
+Possible Additional Mappings:
+
+Not found:
+- global_05min/initialConditions/non-natural/1999/interceptStor_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowCoverSWE_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowFreeWater_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/topWaterLayer_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storUpp_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storLow_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/interflow_forest_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/interceptStor_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowCoverSWE_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowFreeWater_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/topWaterLayer_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storUpp_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storLow_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/interflow_grassland_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/interceptStor_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowCoverSWE_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowFreeWater_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/topWaterLayer_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storUpp_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storLow_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/interflow_irrPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/interceptStor_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowCoverSWE_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/snowFreeWater_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/topWaterLayer_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storUpp_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storLow_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/interflow_irrNonPaddy_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storGroundwater_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/storGroundwaterFossil_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgNonFossilGroundwaterAllocationLong_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgNonFossilGroundwaterAllocationShort_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgTotalGroundwaterAbstraction_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgTotalGroundwaterAllocationLong_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgTotalGroundwaterAllocationShort_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/relativeGroundwaterHead_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/baseflow_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/routing/channel_properties/dzRel%04d.nc			# no matching wildcard found
+- global_05min/initialConditions/non-natural/1999/waterBodyStorage_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/channelStorage_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/readAvlChannelStorage_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgDischargeLong_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgDischargeShort_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/m2tDischargeLong_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgBaseflowLong_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/riverbedExchange_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/subDischarge_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgLakeReservoirInflowShort_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/avgLakeReservoirOutflowLong_1999-12-31.nc			# parent directory of file does not exists
+- global_05min/initialConditions/non-natural/1999/timestepsToAvgDischarge_1999-12-31.nc			# parent directory of file does not exists
