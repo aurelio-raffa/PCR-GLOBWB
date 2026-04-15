@@ -28,8 +28,8 @@ if __name__ == "__main__":
         dir_pth = os.path.join(args.data_ph, args.inp_dir, *os.path.split(pth)[:-1])
         if os.path.exists(full_pth):    # file is ok
             unchanged.add(pth)
-        elif '%' in full_pth:  # check if wildcard is used
-            matches = glob.glob(full_pth.replace('%', '*'))
+        elif re.search(r'%([0-9]+)[di]', str(full_pth)):  # check if wildcard is used
+            matches = glob.glob(full_pth.replace(re.search(r'%([0-9]+)[di]', str(full_pth)).group(0), '*'))
             if len(matches) == 0:
                 unmapped[full_pth] = 'no matching wildcard found'
             elif len(matches) == 1:
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     s += f'-> {len(unchanged)} exact matches found;\n'
     s += f'-> {len(mapped)} found under a different extension;\n'
     s += f'-> {len(name_conflict)} have multiple incompatible extensions;\n'
-    s += f'-> {len(unmapped)} have not been found under any extension;\n'
+    s += f'-> {len(unmapped)} have not been found under any extension.\n'
     s += '\nRecovered File Mapping:\n'
     for k, v in mapped.items():
         s += f'- {k}: {v}\n'
