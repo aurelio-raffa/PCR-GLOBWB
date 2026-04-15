@@ -1,6 +1,7 @@
 import os
 import re
 import argparse
+import glob
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--inp_ini')
@@ -27,6 +28,14 @@ if __name__ == "__main__":
         dir_pth = os.path.join(args.data_ph, args.inp_dir, *os.path.split(pth)[:-1])
         if os.path.exists(full_pth):    # file is ok
             unchanged.add(pth)
+        elif '%' in full_pth:  # check if wildcard is used
+            matches = glob.glob(full_pth.replace('%', '*'))
+            if len(matches) == 0:
+                unmapped[full_pth] = 'no matching wildcard found'
+            elif len(matches) == 1:
+                unchanged.add(full_pth)
+            else:
+                name_conflict[full_pth] = [os.path.join(str(dir_pth), f) for f in matches]
         elif os.path.isdir(dir_pth):    # at least the directory exists
             if sum(
                     [
@@ -36,7 +45,7 @@ if __name__ == "__main__":
             ):
                 # a single file with the same name exists but with different ext
                 [mapped[full_pth]] = [
-                    f for f in os.listdir(str(dir_pth))
+                    os.path.join(str(dir_pth), f) for f in os.listdir(str(dir_pth))
                     if int(os.path.splitext(f)[0] == os.path.split(pth)[-1])
                 ]
             elif any(
@@ -47,7 +56,7 @@ if __name__ == "__main__":
             ):
                 # multiple different versions exist...
                 name_conflict[full_pth] = [
-                    f for f in os.listdir(str(dir_pth))
+                    os.path.join(str(dir_pth), f) for f in os.listdir(str(dir_pth))
                     if os.path.splitext(f)[0] == os.path.split(pth)[-1]
                 ]
             else:
@@ -72,7 +81,7 @@ if __name__ == "__main__":
         s += '\n'.join([f'\t- {e}' for e in v]) + '\n'
     s += '\nNot found:\n'
     for k, v in unmapped.items():
-        s += f'- {k} # {v}\n'
+        s += f'- {k}\t\t\t# {v}\n'
 
     # print and save
     print(s)
