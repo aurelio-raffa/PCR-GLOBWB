@@ -21,36 +21,41 @@ if __name__ == "__main__":
     unchanged = set()
     mapped = {}
     name_conflict = {}
-    unmapped = set()
+    unmapped = {}
     for pth, ext in links:
         full_pth = os.path.join(args.data_ph, args.inp_dir, f'{pth}.{ext}')
         dir_pth = os.path.join(args.data_ph, args.inp_dir, *os.path.split(pth)[:-1])
-        if os.path.exists(full_pth):
+        if os.path.exists(full_pth):    # file is ok
             unchanged.add(pth)
-        elif sum(
-                [
-                    int(os.path.splitext(f)[0] == os.path.split(pth)[-1])
-                    for f in os.listdir(str(dir_pth))
+        elif os.path.isdir(dir_pth):    # at least the directory exists
+            if sum(
+                    [
+                        int(os.path.splitext(f)[0] == os.path.split(pth)[-1])
+                        for f in os.listdir(str(dir_pth))
+                    ]
+            ):
+                # a single file with the same name exists but with different ext
+                [mapped[full_pth]] = [
+                    f for f in os.listdir(str(dir_pth))
+                    if int(os.path.splitext(f)[0] == os.path.split(pth)[-1])
                 ]
-        ):
-            # a single file with the same name exists but with different ext
-            [mapped[full_pth]] = [
-                f for f in os.listdir(str(dir_pth))
-                if int(os.path.splitext(f)[0] == os.path.split(pth)[-1])
-            ]
-        elif any(
-                [
-                    os.path.splitext(f)[0] == os.path.split(pth)[-1]
-                    for f in os.listdir(str(dir_pth))
+            elif any(
+                    [
+                        os.path.splitext(f)[0] == os.path.split(pth)[-1]
+                        for f in os.listdir(str(dir_pth))
+                    ]
+            ):
+                # multiple different versions exist...
+                name_conflict[full_pth] = [
+                    f for f in os.listdir(str(dir_pth))
+                    if os.path.splitext(f)[0] == os.path.split(pth)[-1]
                 ]
-        ):
-            # multiple different versions exist...
-            name_conflict[full_pth] = [
-                f for f in os.listdir(str(dir_pth))
-                if os.path.splitext(f)[0] == os.path.split(pth)[-1]
-            ]
+            else:
+                # no file exists with same name before extension
+                unmapped[full_pth] = 'no file of this name (net of extension) exists in directory'
         else:
-            unmapped.add(full_pth)
+            # not even the directory exits
+            unmapped[full_pth] = 'parent directory of file does not exists'
 
     # create and print summary
     s = f'Of the {len(links)} paths in under {args.inp_dir}/ in {args.inp_ini}:\n'
@@ -66,8 +71,8 @@ if __name__ == "__main__":
         s += f'- {k}:\n'
         s += '\n'.join([f'\t- {e}' for e in v]) + '\n'
     s += '\nNot found:\n'
-    for k in sorted(unmapped):
-        s += f'- {k}\n'
+    for k, v in unmapped.items():
+        s += f'- {k} # {v}\n'
 
     # print and save
     print(s)
