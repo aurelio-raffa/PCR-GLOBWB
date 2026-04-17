@@ -3,6 +3,8 @@ import os
 import argparse
 from datetime import datetime
 
+name = 'name'
+ini_template = 'base_ini'
 outputDir = 'outputDir'
 cloneMap = 'cloneMap'
 inputDir = 'inputDir'
@@ -13,21 +15,94 @@ description = 'description'
 lowResData = 'lowResData'
 highResData = 'highResData'
 
-parser = argparse.ArgumentParser()
-parser.add_argument(f"--name", type=str)
-parser.add_argument(f"--base_ini", type=str)
-parser.add_argument(f"--{outputDir}", type=str)
-parser.add_argument(f"--{cloneMap}", type=str)
-parser.add_argument(f"--{inputDir}", type=str)
-parser.add_argument(f"--{landmask}", default='None', type=str)
-parser.add_argument(f"--{institution}", default='""', type=str)
-parser.add_argument(f"--{title}", default='""', type=str)
-parser.add_argument(f"--{description}", default='""', type=str)
-parser.add_argument(f"--{lowResData}", default='global_30min', type=str)
-parser.add_argument(f"--{highResData}", default='global_05min', type=str)
+help_msg: str = f"""Generate a configuration (.ini) file from a template with dynamic arguments.
+This script reads a base INI template file, replaces placeholders using
+command-line arguments, and writes a new configuration file with a timestamped
+filename. The naming pattern for the output file is 
+\"config_{{%y%m%d%H%M}}_{{args.{name}}}_{{args.{ini_template}.filename}}\""""
+
+parser = argparse.ArgumentParser(description=help_msg)
+parser.add_argument(
+    f"--{name}",
+    type=str,
+    help='Identifier used in the output filename'
+)
+parser.add_argument(
+    f"--{ini_template}",
+    type=str,
+    help='Path to the base INI template file'
+)
+parser.add_argument(
+    f"--{outputDir}",
+    type=str,
+    help='Output directory to be injected into the template'
+)
+parser.add_argument(
+    f"--{cloneMap}",
+    type=str,
+    help='Path or identifier for the clone map'
+)
+parser.add_argument(
+    f"--{inputDir}",
+    type=str,
+    help='Input data directory'
+)
+parser.add_argument(
+    f"--{landmask}",
+    default='None',
+    type=str,
+    help='Landmask file or identifier. Defaults to "None"'
+)
+parser.add_argument(
+    f"--{institution}",
+    default='""',
+    type=str,
+    help='Name of the institution (metadata). Defaults to empty string'
+)
+parser.add_argument(
+    f"--{title}",
+    default='""',
+    type=str,
+    help='Title metadata for the configuration. Defaults to empty string'
+)
+parser.add_argument(
+    f"--{description}",
+    default='""',
+    type=str,
+    help='Description metadata for the configuration. Defaults to empty string'
+)
+parser.add_argument(
+    f"--{lowResData}",
+    default='global_30min',
+    type=str,
+    help=f'{inputDir} subdirectory for low-resolution data. Defaults to "global_30min"'
+)
+parser.add_argument(
+    f"--{highResData}",
+    default='global_05min',
+    type=str,
+    help=f'{inputDir} subdirectory for high-resolution data. Defaults to "global_05min"'
+)
 
 
-if __name__ == "__main__":
+def create_ini_config():
+    f"""{help_msg}
+    
+    Behavior:
+        1. Reads the base INI template file.
+        2. Writes the new configuration (with comment timestamped) to a new file with a timestamped name.
+        3. Prints the name of the generated file.
+        
+    Example usage:
+        python create_ini_config.py \\
+            --{name}=NAME_FOR_THE_EXPERIMENT \\
+            --{institution}=YOUR_INSITUTION \\
+            --{title}=TITLE_FOR_THE_RUN \\
+            --{ini_template}=config/30min.ini \\
+            --{outputDir}=YOUR_OUTPUT_DIR \\
+            --{cloneMap}=./clone_landmask_maps/clone_global_30min.map \\
+            --{inputDir}=YOUR_DATA_DIR
+    """
     args = parser.parse_args()
     now = datetime.now()
 
@@ -44,3 +119,7 @@ if __name__ == "__main__":
         handle.write(full_ini)
 
     print(filename)
+
+
+if __name__ == "__main__":
+    create_ini_config()
