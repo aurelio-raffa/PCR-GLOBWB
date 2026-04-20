@@ -43,9 +43,9 @@ job_template = f"""#!/bin/sh
 #BSUB -e {{{WORKING_DIR}}}/errfile.%J.txt
 #BSUB -P {{{PROJECT_CODE}}}    
 module load anaconda
-source activate {{{CONDA_ENV}}}
-cd ./model
-python3 deterministic_runner.py ../{{{CONFIG_INI_PATH}}}
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate {{{CONDA_ENV}}}
+python3 model/deterministic_runner.py {{{CONFIG_INI_PATH}}}
 """
 
 parser = argparse.ArgumentParser(description=help_msg)
