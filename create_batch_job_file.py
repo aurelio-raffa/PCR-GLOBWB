@@ -44,7 +44,8 @@ job_template = f"""#!/bin/sh
 #BSUB -P {{{PROJECT_CODE}}}    
 module load anaconda
 source activate {{{CONDA_ENV}}}
-python3 model/deterministic_runner.py {{{CONFIG_INI_PATH}}}
+cd ./model
+python3 deterministic_runner.py ../{{{CONFIG_INI_PATH}}}
 """
 
 parser = argparse.ArgumentParser(description=help_msg)
