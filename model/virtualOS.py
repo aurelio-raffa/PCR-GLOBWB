@@ -177,7 +177,12 @@ def singleTryNetcdf2PCRobjCloneWithoutTime(ncFile, varName,\
         colsInput = len(f.variables['lon'])
         xULInput = f.variables['lon'][0]-0.5*cellsizeInput
         yULInput = f.variables['lat'][0]+0.5*cellsizeInput
-        # check whether both maps have the same attributes 
+        # check whether both maps have the same attributes
+        # @AR WARNING: exact floating-point equality comparisons — can spuriously set sameClone=False
+        # at 5-arcmin resolution due to rounding in how xULInput/cellsizeInput are derived from
+        # the NetCDF file vs. PCRaster clone attributes, forcing entry into the cropping block
+        # below even when grids are effectively aligned. Consider tolerance-based comparison,
+        # TODO: e.g. math.isclose(cellsizeClone, cellsizeInput, rel_tol=1e-6).
         if cellsizeClone != cellsizeInput: sameClone = False
         if rowsClone != rowsInput: sameClone = False
         if colsClone != colsInput: sameClone = False
@@ -190,10 +195,15 @@ def singleTryNetcdf2PCRobjCloneWithoutTime(ncFile, varName,\
 
         factor = int(round(float(cellsizeInput)/float(cellsizeClone)))
 
-        # crop to cloneMap:
-        minX    = min(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput))) # ; print(minX)
-
-        xIdxSta = int(np.where(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput)) == minX)[0])
+        # @AR INFO: np.where()[0] returns a 1-D array; int() on it raises TypeError in NumPy >= 1.25
+        # ("only 0-dimensional arrays can be converted to Python scalars") — the fix is [0][0].
+        # A corrected version with the right sign convention is already present in the line below
+        # (commented out, referencing PR #13), but the computation of the min_X can be avoided.
+        xIdxSta = np.argmin(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput)))
+        # @AR: see https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13/changes/f905df82002709ae19c661e821822a0431115bbe
+        # See NumPy migration guide:
+        # https://numpy.org/doc/stable/release/1.25.0-notes.html#deprecations
+        # and the upstream fix: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
 
         #~ xIdxSta = int(np.where(np.abs(f.variables['lon'][:] - (xULClone - cellsizeInput/2)) == minX)[0][0])
         #~ # see: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
@@ -201,9 +211,11 @@ def singleTryNetcdf2PCRobjCloneWithoutTime(ncFile, varName,\
         #~ xIdxEnd = int(math.ceil(xIdxSta + colsClone /(cellsizeInput/cellsizeClone)))
         xIdxEnd = int(math.ceil(xIdxSta + colsClone /(factor)))
 
-        minY    = min(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput))) # ; print(minY)
-
-        yIdxSta = int(np.where(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)) == minY)[0])
+        yIdxSta = np.argmin(abs(f.variables['lat'][:] - (xULClone - 0.5*cellsizeInput)))
+        # @AR: see https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13/changes/f905df82002709ae19c661e821822a0431115bbe
+        # See NumPy migration guide:
+        # https://numpy.org/doc/stable/release/1.25.0-notes.html#deprecations
+        # and the upstream fix: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
 
         #~ yIdxSta = int(np.where(np.abs(f.variables['lat'][:] - (yULClone - cellsizeInput/2)) == minY)[0][0])
         #~ # see: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
