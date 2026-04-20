@@ -211,7 +211,7 @@ def singleTryNetcdf2PCRobjCloneWithoutTime(ncFile, varName,\
         #~ xIdxEnd = int(math.ceil(xIdxSta + colsClone /(cellsizeInput/cellsizeClone)))
         xIdxEnd = int(math.ceil(xIdxSta + colsClone /(factor)))
 
-        yIdxSta = np.argmin(abs(f.variables['lat'][:] - (xULClone - 0.5*cellsizeInput)))
+        yIdxSta = np.argmin(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)))
         # @AR: see https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13/changes/f905df82002709ae19c661e821822a0431115bbe
         # See NumPy migration guide:
         # https://numpy.org/doc/stable/release/1.25.0-notes.html#deprecations
@@ -248,7 +248,7 @@ def singleTryNetcdf2PCRobjCloneWithoutTime(ncFile, varName,\
             outPCR = pcr.numpy2pcr(pcr.Scalar, \
                   regridData2FinerGrid(factor, cropData, float(f.variables[varName]._FillValue)), \
                   float(f.variables[varName]._FillValue))
-        except:
+        except AttributeError:
             outPCR = pcr.numpy2pcr(pcr.Scalar, \
                   regridData2FinerGrid(factor, cropData, float(f.variables[varName].missing_value)), \
                   float(f.variables[varName].missing_value))
@@ -257,7 +257,7 @@ def singleTryNetcdf2PCRobjCloneWithoutTime(ncFile, varName,\
     #~ pcr.report(outPCR,"tmp.map")
     #~ print(varName)
     #~ os.system('aguila tmp.map')
-    
+
     # we should close the file
     f.close();
 
