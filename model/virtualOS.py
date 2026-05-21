@@ -522,12 +522,18 @@ def singleTryNetcdf2PCRobjClone_version_until_2020_07_14(ncFile,\
         logger.debug('Crop to the clone map with lower left corner (x,y): '+str(xULClone)+' , '+str(yULClone))
         # crop to cloneMap:
         #~ xIdxSta = int(np.where(f.variables['lon'][:] == xULClone + 0.5*cellsizeInput)[0])
-        minX    = min(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput))) # ; print(minX)
-        xIdxSta = int(np.where(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput)) == minX)[0])
+        # @AR INFO: np.where()[0] returns a 1-D array; int() on it raises TypeError in NumPy >= 1.25
+        # ("only 0-dimensional arrays can be converted to Python scalars") — the fix is [0][0].
+        # A corrected version with the right sign convention is already present in the line below
+        # (commented out, referencing PR #13), but the computation of the min_X can be avoided.
+        xIdxSta = np.argmin(abs(f.variables['lon'][:] - (xULClone + 0.5 * cellsizeInput)))
         xIdxEnd = int(math.ceil(xIdxSta + colsClone /(cellsizeInput/cellsizeClone)))
         #~ yIdxSta = int(np.where(f.variables['lat'][:] == yULClone - 0.5*cellsizeInput)[0])
-        minY    = min(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput))) # ; print(minY)
-        yIdxSta = int(np.where(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)) == minY)[0])
+        yIdxSta = np.argmin(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)))
+        # @AR: see https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13/changes/f905df82002709ae19c661e821822a0431115bbe
+        # See NumPy migration guide:
+        # https://numpy.org/doc/stable/release/1.25.0-notes.html#deprecations
+        # and the upstream fix: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
         yIdxEnd = int(math.ceil(yIdxSta + rowsClone /(cellsizeInput/cellsizeClone)))
 
         # retrieve data from netCDF for slice
@@ -813,10 +819,15 @@ def singleTryNetcdf2PCRobjClone(ncFile,\
 
         factor = int(round(float(cellsizeInput)/float(cellsizeClone)))
 
-        # crop to cloneMap:
-        minX    = min(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput))) # ; print(minX)
-
-        xIdxSta = int(np.where(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput)) == minX)[0])
+        # @AR INFO: np.where()[0] returns a 1-D array; int() on it raises TypeError in NumPy >= 1.25
+        # ("only 0-dimensional arrays can be converted to Python scalars") — the fix is [0][0].
+        # A corrected version with the right sign convention is already present in the line below
+        # (commented out, referencing PR #13), but the computation of the min_X can be avoided.
+        xIdxSta = np.argmin(abs(f.variables['lon'][:] - (xULClone + 0.5 * cellsizeInput)))
+        # @AR: see https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13/changes/f905df82002709ae19c661e821822a0431115bbe
+        # See NumPy migration guide:
+        # https://numpy.org/doc/stable/release/1.25.0-notes.html#deprecations
+        # and the upstream fix: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
 
         #~ xIdxSta = int(np.where(np.abs(f.variables['lon'][:] - (xULClone - cellsizeInput/2)) == minX)[0][0])
         #~ # see: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
@@ -824,9 +835,11 @@ def singleTryNetcdf2PCRobjClone(ncFile,\
         #~ xIdxEnd = int(math.ceil(xIdxSta + colsClone /(cellsizeInput/cellsizeClone)))
         xIdxEnd = int(math.ceil(xIdxSta + colsClone /(factor)))
 
-        minY    = min(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput))) # ; print(minY)
-
-        yIdxSta = int(np.where(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)) == minY)[0])
+        yIdxSta = np.argmin(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)))
+        # @AR: see https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13/changes/f905df82002709ae19c661e821822a0431115bbe
+        # See NumPy migration guide:
+        # https://numpy.org/doc/stable/release/1.25.0-notes.html#deprecations
+        # and the upstream fix: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
 
         #~ yIdxSta = int(np.where(np.abs(f.variables['lat'][:] - (yULClone - cellsizeInput/2)) == minY)[0][0])
         #~ # see: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
@@ -1094,12 +1107,18 @@ def netcdf2PCRobjCloneBeforeRensCorrection(
         logger.debug('Crop to the clone map with lower left corner (x,y): '+str(xULClone)+' , '+str(yULClone))
         # crop to cloneMap:
         #~ xIdxSta = int(np.where(f.variables['lon'][:] == xULClone + 0.5*cellsizeInput)[0])
-        minX    = min(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput))) # ; print(minX)
-        xIdxSta = int(np.where(abs(f.variables['lon'][:] - (xULClone + 0.5*cellsizeInput)) == minX)[0])
+        # @AR INFO: np.where()[0] returns a 1-D array; int() on it raises TypeError in NumPy >= 1.25
+        # ("only 0-dimensional arrays can be converted to Python scalars") — the fix is [0][0].
+        # A corrected version with the right sign convention is already present in the line below
+        # (commented out, referencing PR #13), but the computation of the min_X can be avoided.
+        xIdxSta = np.argmin(abs(f.variables['lon'][:] - (xULClone + 0.5 * cellsizeInput)))
         xIdxEnd = int(math.ceil(xIdxSta + colsClone /(cellsizeInput/cellsizeClone)))
         #~ yIdxSta = int(np.where(f.variables['lat'][:] == yULClone - 0.5*cellsizeInput)[0])
-        minY    = min(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput))) # ; print(minY)
-        yIdxSta = int(np.where(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)) == minY)[0])
+        yIdxSta = np.argmin(abs(f.variables['lat'][:] - (yULClone - 0.5*cellsizeInput)))
+        # @AR: see https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13/changes/f905df82002709ae19c661e821822a0431115bbe
+        # See NumPy migration guide:
+        # https://numpy.org/doc/stable/release/1.25.0-notes.html#deprecations
+        # and the upstream fix: https://github.com/UU-Hydro/PCR-GLOBWB_model/pull/13
         yIdxEnd = int(math.ceil(yIdxSta + rowsClone /(cellsizeInput/cellsizeClone)))
         #~ cropData = f.variables[varName][idx,yIdxSta:yIdxEnd,xIdxSta:xIdxEnd]
         cropData = cropData[yIdxSta:yIdxEnd,xIdxSta:xIdxEnd]
