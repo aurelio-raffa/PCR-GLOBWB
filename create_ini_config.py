@@ -16,7 +16,7 @@ title = 'title'
 description = 'description'
 lowResData = 'lowResData'
 highResData = 'highResData'
-validate = 'validate'
+novalidation = 'novalidation'
 
 help_msg: str = f"""Generate a configuration (.ini) file from a template with dynamic arguments.
 This script reads a base INI template file, replaces placeholders using
@@ -87,10 +87,10 @@ parser.add_argument(
     help=f'{inputDir} subdirectory for high-resolution data. Defaults to "global_05min"'
 )
 parser.add_argument(
-    f"--{validate}",
-    default=True,
+    f"--{novalidation}",
+    action='store_true',
     type=bool,
-    help=f'Validate the paths contained in the generated config file and raise an error if not found. Defaults to True'
+    help=f'If provided, skips path validation in the generated config file and raise an error if not found.'
 )
 
 
