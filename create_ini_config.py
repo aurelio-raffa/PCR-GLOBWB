@@ -144,6 +144,8 @@ def validate_paths_in_ini(
                     print(f"\t\t{suggestion}")
             else:
                 print(f"\tNo replacements found!")
+        else:
+            print(path.suffix, path.parent, path.parent.is_dir())
 
     if raise_on_missing:
         raise ValueError(f'{len(missing)} missing path(s) in generated ini config file.')
