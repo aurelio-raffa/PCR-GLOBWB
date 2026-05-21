@@ -90,7 +90,6 @@ parser.add_argument(
     f"--{novalidation}",
     action='store_true',
     default=False,
-    type=bool,
     help=f'If provided, skips path validation in the generated config file and raise an error if not found.'
 )
 
