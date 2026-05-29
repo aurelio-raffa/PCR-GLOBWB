@@ -186,5 +186,12 @@ msg = "Call: "+str(cmd)
 logger.debug(msg)
 
 
+# BEWARE: the copy loop above only transfers top-level *.py files to scriptDir;
+# Python subpackages living in model/ subdirectories (e.g. evaporation/) are not
+# copied and would therefore be invisible to worker processes once os.chdir(scriptDir)
+# has been called.  Prepending path_of_this_module to PYTHONPATH before spawning the
+# shell ensures all subpackages remain importable without duplicating directory trees.
+os.environ['PYTHONPATH'] = path_of_this_module + os.pathsep + os.environ.get('PYTHONPATH', '')
+
 # execute PCR-GLOBWB and MODFLOW
-vos.cmd_line(cmd, using_subprocess = False)      
+vos.cmd_line(cmd, using_subprocess = False)
