@@ -159,7 +159,7 @@ def validate_paths_in_ini(
 
     Scans the INI configuration and checks each path-like value to ensure the
     corresponding file or directory exists. Path-like values are identified by
-    the presence of forward slashes (/) or backslashes (\).
+    the presence of forward slashes (/) or backslashes (\\).
 
     For missing paths that have a file extension, the parent directory is
     scanned to suggest alternative files with the same stem but different
