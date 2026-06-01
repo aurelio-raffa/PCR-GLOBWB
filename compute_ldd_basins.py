@@ -1062,7 +1062,8 @@ def _print_size_stats(sizes_active: np.ndarray, label: str,
 # Reporting and output
 # ---------------------------------------------------------------------------
 
-def print_summary(basins: list[dict], label: str = '') -> None:
+def print_summary(basins: list[dict], label: str = '',
+                  n_land_orig: int | None = None) -> None:
     total = sum(b['n_cells'] for b in basins)
     n = len(basins)
     avg = total / n if n else 0
@@ -1079,7 +1080,11 @@ def print_summary(basins: list[dict], label: str = '') -> None:
     if label:
         print(f"  {label}")
     print(f"  Subdomains   : {n}")
-    print(f"  Total land   : {total:,} cells")
+    if n_land_orig is not None and n_land_orig > 0:
+        pct_kept = 100.0 * total / n_land_orig
+        print(f"  Total land   : {total:,} cells ({pct_kept:.1f}% of original {n_land_orig:,})")
+    else:
+        print(f"  Total land   : {total:,} cells")
     print(f"  Target/tile  : {avg:,.0f} cells  (total / N)")
     print(f"  Largest      : {mx:,} cells  ({100 * mx / total:.1f}%)")
     print(f"  Smallest     : {mn:,} cells  ({100 * mn / total:.1f}%)")
@@ -1112,6 +1117,68 @@ def write_extents_csv(basins: list[dict], path: str, ldd_path: str) -> None:
             f.write(f"{b['code']},{b['xmin']:.10f},{b['ymin']:.10f},"
                     f"{b['xmax']:.10f},{b['ymax']:.10f}\n")
     print(f"Extents CSV written: {path}")
+
+
+def write_partition_npz(
+        compact_2d: np.ndarray,
+        parent: np.ndarray,
+        basins: list[dict],
+        nrows: int,
+        ncols: int,
+        path: str
+) -> None:
+    """
+    Save the final tile partition to a compressed numpy archive for use by
+    create_tile_clone_maps.py --partition.
+
+    Arrays stored
+    -------------
+    tile_map   : (nrows, ncols) int16
+                 Tile index (0-based, matching `codes` order) for each cell,
+                 -1 for ocean, -2 for filtered/dropped cells.
+    codes      : 1-D array of tile code strings  (e.g. ['M01', 'M02', ...])
+    xmin/ymin/xmax/ymax : 1-D float64 arrays of tile bounding boxes
+    cell_size  : scalar float64 (degrees)
+    global_xmin/global_ymax : scalar float64 (reference corner)
+    """
+    n_comp = len(parent)
+    roots_map = np.array([_find_root(i, parent) for i in range(n_comp)],
+                         dtype=np.int32)
+
+    # Build code -> tile index lookup
+    code_list = [b['code'] for b in basins]
+    root_to_idx: dict[int, int] = {b['root']: i for i, b in enumerate(basins)}
+
+    flat = compact_2d.ravel()
+    tile_flat = np.full(len(flat), -1, dtype=np.int16)
+    land = flat >= 0
+    land_roots = roots_map[flat[land]]
+    # Map roots that are in the final basins list; others remain -1 (dropped)
+    tile_flat_land = np.full(land_roots.shape, -2, dtype=np.int16)
+    for root, idx in root_to_idx.items():
+        tile_flat_land[land_roots == root] = np.int16(idx)
+    tile_flat[np.where(land)[0]] = tile_flat_land
+
+    # ocean cells (compact_2d == -1) → tile_flat stays -1
+    # filtered/dropped cells (compact_2d == -2) → tile_flat stays -1
+    # Re-mark filtered as -2 to distinguish from ocean
+    tile_flat[flat == -2] = -2
+
+    tile_map = tile_flat.reshape(nrows, ncols)
+
+    np.savez_compressed(
+        path,
+        tile_map=tile_map,
+        codes=np.array(code_list, dtype=object),
+        xmin=np.array([b['xmin'] for b in basins]),
+        ymin=np.array([b['ymin'] for b in basins]),
+        xmax=np.array([b['xmax'] for b in basins]),
+        ymax=np.array([b['ymax'] for b in basins]),
+        cell_size=np.float64(CELL_SIZE),
+        global_xmin=np.float64(GLOBAL_XMIN),
+        global_ymax=np.float64(GLOBAL_YMAX),
+    )
+    print(f"Partition NPZ written: {path}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1508,6 +1575,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--output_extents', default=None,
                    help='Write extents CSV (requires --n_tiles). '
                         'Compatible with create_tile_clone_maps.py.')
+    p.add_argument('--output_partition', default=None, metavar='PATH',
+                   help='Write a compressed numpy archive (.npz) containing '
+                        'the full tile_map, tile codes, bounding boxes, and '
+                        'grid metadata.  Required by create_tile_clone_maps.py '
+                        '--partition to generate per-tile landmask maps.')
     p.add_argument('--output_image', default=None,
                    help='Save a color-coded partition PNG to this path.')
     p.add_argument('--verify_tree', action='store_true',
@@ -1762,14 +1834,17 @@ def main() -> None:
     print('Computing geographic extents ...', flush=True)
     basins = compute_extents(compact_2d, parent, sizes, nrows, ncols)
     basins = assign_codes(basins)
-    print_summary(basins, label=f'Final {len(basins)} subdomains')
+    print_summary(basins, label=f'Final {len(basins)} subdomains',
+                  n_land_orig=n_land)
 
     if args.output_image:
-        save_partition_image(compact_2d, parent, args.output_image,
-                             basins=basins)
+        save_partition_image(compact_2d, parent, args.output_image, basins=basins)
 
     if args.output_extents:
         write_extents_csv(basins, args.output_extents, args.ldd)
+
+    if args.output_partition:
+        write_partition_npz(compact_2d, parent, basins, nrows, ncols, args.output_partition)
 
 
 if __name__ == '__main__':
