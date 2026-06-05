@@ -58,6 +58,7 @@ drop islands < 500 cells, and save a partition image:
 
 import argparse
 import heapq
+import math
 import os
 import struct
 import sys
@@ -1012,6 +1013,59 @@ def compute_extents(compact_2d: np.ndarray, parent: np.ndarray,
     return basins
 
 
+def snap_extents_to_grid(basins: list[dict], snap_cellsize: float,
+                         nrows: int, ncols: int) -> None:
+    """
+    Enlarge each tile bounding box outward so its edges fall on the coarse input
+    grid defined by `snap_cellsize` (degrees), aligned to the global raster origin.
+
+    Why this is needed
+    ------------------
+    PCR-GLOBWB resamples coarse forcing/parameter maps onto each tile's fine clone
+    by an integer factor = coarse_cellsize / clone_cellsize (e.g. 6 for a 30 arcmin
+    input on a 5 arcmin clone). The regrid inflates a cropped coarse array of
+    ceil(rowsClone / factor) cells back up by `factor`, so the result matches the
+    clone ONLY when rowsClone and colsClone are exact multiples of `factor`.
+    Otherwise pcr.numpy2pcr raises
+        "Number of rows/columns from input array (N) and current raster (M) are
+         different".
+    The global clone (2160 x 4320) is divisible by 6 so a serial run never trips;
+    arbitrary per-tile bounding boxes are not, which is what breaks parallel runs.
+
+    Snapping every extent to whole coarse cells guarantees the divisibility. The
+    partition of land cells is unchanged; the clone box just gains a few masked
+    border cells. Modifies `basins` in place and recomputes bbox_cells / fill_pct.
+    """
+    if not snap_cellsize or snap_cellsize <= 0:
+        return
+
+    ratio = snap_cellsize / CELL_SIZE
+    if abs(ratio - round(ratio)) > 1e-6:
+        print(f"WARNING: --snap_cellsize {snap_cellsize} is not an integer "
+              f"multiple of the clone cell size {CELL_SIZE:.8f}; snapping cannot "
+              f"guarantee clone divisibility.", file=sys.stderr, flush=True)
+
+    global_xmax = GLOBAL_XMIN + ncols * CELL_SIZE
+    global_ymin = GLOBAL_YMAX - nrows * CELL_SIZE
+
+    def snap_down(v: float, origin: float) -> float:
+        return origin + math.floor((v - origin) / snap_cellsize + 1e-9) * snap_cellsize
+
+    def snap_up(v: float, origin: float) -> float:
+        return origin + math.ceil((v - origin) / snap_cellsize - 1e-9) * snap_cellsize
+
+    for b in basins:
+        b['xmin'] = max(GLOBAL_XMIN, snap_down(b['xmin'], GLOBAL_XMIN))
+        b['xmax'] = min(global_xmax, snap_up(b['xmax'], GLOBAL_XMIN))
+        b['ymin'] = max(global_ymin, snap_down(b['ymin'], GLOBAL_YMAX))
+        b['ymax'] = min(GLOBAL_YMAX, snap_up(b['ymax'], GLOBAL_YMAX))
+        bbox_cols = int(round((b['xmax'] - b['xmin']) / CELL_SIZE))
+        bbox_rows = int(round((b['ymax'] - b['ymin']) / CELL_SIZE))
+        b['bbox_cells'] = bbox_cols * bbox_rows
+        b['fill_pct'] = (100.0 * b['n_cells'] / b['bbox_cells']
+                         if b['bbox_cells'] > 0 else 0.0)
+
+
 def _find_root(x: int, parent: np.ndarray) -> int:
     """Non-mutating root finder."""
     while parent[x] != x:
@@ -1617,6 +1671,16 @@ def build_parser() -> argparse.ArgumentParser:
                         'merging it if the resulting combined bounding-box '
                         'fill fraction would fall below F (0–1). Applies to '
                         'all components regardless of size.')
+    p.add_argument('--snap_cellsize', type=float, default=0.5, metavar='DEG',
+                   help='Snap every tile bounding box outward to this coarse '
+                        'grid size (degrees), aligned to the global origin, so '
+                        'each clone\'s rows/cols are an exact multiple of the '
+                        'coarse->clone resample factor. This is REQUIRED for '
+                        'parallel runs: PCR-GLOBWB cannot map coarse inputs onto '
+                        'a tile clone whose dimensions are not a multiple of that '
+                        'factor (pcr.numpy2pcr raises a row/column mismatch). '
+                        'Set to the coarsest input resolution used by the run '
+                        '(default 0.5 = 30 arcmin). Use 0 to disable snapping.')
     p.add_argument('--debug_stages', default=None, metavar='PREFIX',
                    help='Save a PNG snapshot of the partition after each '
                         'processing stage. Images are written as '
@@ -1833,6 +1897,10 @@ def main() -> None:
     # ------------------------------------------------------------------
     print('Computing geographic extents ...', flush=True)
     basins = compute_extents(compact_2d, parent, sizes, nrows, ncols)
+    if args.snap_cellsize and args.snap_cellsize > 0:
+        print(f'Snapping tile extents to the {args.snap_cellsize} deg coarse '
+              f'grid (clone divisibility) ...', flush=True)
+        snap_extents_to_grid(basins, args.snap_cellsize, nrows, ncols)
     basins = assign_codes(basins)
     print_summary(basins, label=f'Final {len(basins)} subdomains',
                   n_land_orig=n_land)
