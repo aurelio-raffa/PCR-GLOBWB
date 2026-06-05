@@ -563,20 +563,44 @@ def singleTryNetcdf2PCRobjClone_version_until_2020_07_14(ncFile,\
                   #~ float(f.variables[varName]._FillValue))
 
 
-    # convert to PCR object and close f 
+    # convert to PCR object and close f
+    # Resolve the fill/missing value ONCE, with an explicit fallback chain. The
+    # previous bare `except:` retried numpy2pcr and so masked the real failure
+    # (a clone/array shape mismatch) behind a misleading "NetCDF: Attribute not
+    # found" AttributeError. Each step now fails loudly and informatively.
     if specificFillValue != None:
-        outPCR = pcr.numpy2pcr(pcr.Scalar, \
-                  regridData2FinerGrid(factor, cropData, float(specificFillValue)), \
-                  float(specificFillValue))
+        fillValue = float(specificFillValue)
     else:
         try:
-            outPCR = pcr.numpy2pcr(pcr.Scalar, \
-                  regridData2FinerGrid(factor, cropData, float(f.variables[varName]._FillValue)), \
-                  float(f.variables[varName]._FillValue))
-        except:
-            outPCR = pcr.numpy2pcr(pcr.Scalar, \
-                  regridData2FinerGrid(factor, cropData, float(f.variables[varName].missing_value)), \
-                  float(f.variables[varName].missing_value))
+            fillValue = float(f.variables[varName]._FillValue)
+        except AttributeError:
+            try:
+                fillValue = float(f.variables[varName].missing_value)
+            except AttributeError:
+                fillValue = float(MV)
+                logger.warning(
+                    "netCDF variable '%s' in file '%s' has neither '_FillValue' "
+                    "nor 'missing_value'; using the default missing value %s."
+                    % (str(varName), str(ncFile), str(MV)))
+
+    regridded = regridData2FinerGrid(factor, cropData, fillValue)
+
+    try:
+        outPCR = pcr.numpy2pcr(pcr.Scalar, regridded, fillValue)
+    except RuntimeError as exc:
+        # Almost always a clone/array shape mismatch: the regridded array does not
+        # match the clone raster because the clone's rows/cols are not an exact
+        # multiple of the resample factor (e.g. tile clone maps not snapped to the
+        # coarse input grid). Re-raise with actionable context instead of hiding it.
+        nrF, ncF = np.shape(regridded)
+        raise RuntimeError(
+            "Failed to map input '%s' (variable '%s') onto clone '%s': %s. "
+            "Regridded array is %d rows x %d cols at resample factor %d; the clone "
+            "rows/cols are likely not a multiple of %d. Re-generate the tile clone "
+            "maps with extents snapped to the coarse input grid "
+            "(compute_ldd_basins.py --snap_cellsize)."
+            % (str(ncFile), str(varName), str(cloneMapFileName), str(exc),
+               int(nrF), int(ncF), int(factor), int(factor))) from exc
 
     #~ pcr.aguila(outPCR)
     
@@ -874,20 +898,44 @@ def singleTryNetcdf2PCRobjClone(ncFile,\
                   #~ float(f.variables[varName]._FillValue))
 
 
-    # convert to PCR object and close f 
+    # convert to PCR object and close f
+    # Resolve the fill/missing value ONCE, with an explicit fallback chain. The
+    # previous bare `except:` retried numpy2pcr and so masked the real failure
+    # (a clone/array shape mismatch) behind a misleading "NetCDF: Attribute not
+    # found" AttributeError. Each step now fails loudly and informatively.
     if specificFillValue != None:
-        outPCR = pcr.numpy2pcr(pcr.Scalar, \
-                  regridData2FinerGrid(factor, cropData, float(specificFillValue)), \
-                  float(specificFillValue))
+        fillValue = float(specificFillValue)
     else:
         try:
-            outPCR = pcr.numpy2pcr(pcr.Scalar, \
-                  regridData2FinerGrid(factor, cropData, float(f.variables[varName]._FillValue)), \
-                  float(f.variables[varName]._FillValue))
-        except:
-            outPCR = pcr.numpy2pcr(pcr.Scalar, \
-                  regridData2FinerGrid(factor, cropData, float(f.variables[varName].missing_value)), \
-                  float(f.variables[varName].missing_value))
+            fillValue = float(f.variables[varName]._FillValue)
+        except AttributeError:
+            try:
+                fillValue = float(f.variables[varName].missing_value)
+            except AttributeError:
+                fillValue = float(MV)
+                logger.warning(
+                    "netCDF variable '%s' in file '%s' has neither '_FillValue' "
+                    "nor 'missing_value'; using the default missing value %s."
+                    % (str(varName), str(ncFile), str(MV)))
+
+    regridded = regridData2FinerGrid(factor, cropData, fillValue)
+
+    try:
+        outPCR = pcr.numpy2pcr(pcr.Scalar, regridded, fillValue)
+    except RuntimeError as exc:
+        # Almost always a clone/array shape mismatch: the regridded array does not
+        # match the clone raster because the clone's rows/cols are not an exact
+        # multiple of the resample factor (e.g. tile clone maps not snapped to the
+        # coarse input grid). Re-raise with actionable context instead of hiding it.
+        nrF, ncF = np.shape(regridded)
+        raise RuntimeError(
+            "Failed to map input '%s' (variable '%s') onto clone '%s': %s. "
+            "Regridded array is %d rows x %d cols at resample factor %d; the clone "
+            "rows/cols are likely not a multiple of %d. Re-generate the tile clone "
+            "maps with extents snapped to the coarse input grid "
+            "(compute_ldd_basins.py --snap_cellsize)."
+            % (str(ncFile), str(varName), str(cloneMapFileName), str(exc),
+               int(nrF), int(ncF), int(factor), int(factor))) from exc
 
     #~ pcr.aguila(outPCR)
     
