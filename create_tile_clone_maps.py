@@ -89,6 +89,24 @@ def read_global_clone_cellsize(path: str) -> float:
     return struct.unpack_from('<d', raw, 108)[0]
 
 
+def grid_aligned_nw_corner(xmin: float, ymax: float,
+                           cellsize: float) -> tuple[float, float]:
+    """
+    Snap a tile's north-west corner onto the global grid.
+
+    The clone must be a pixel-exact window of the global map: gdalwarpPCR and
+    isSameClone align the source to the clone via its xUL/yUL/cellsize, so any
+    sub-cell offset between the tile grid and the global grid lets the regridder
+    drop cells to missing value (see known_issues.txt, 28 July 2014 — clone
+    corners must coincide with the global grid).  Anchoring west/north to the
+    global origin by an integer number of cells guarantees that coincidence,
+    instead of accumulating float drift from ymin + nrows * cellsize.
+    """
+    west = GLOBAL_XMIN + round((xmin - GLOBAL_XMIN) / cellsize) * cellsize
+    north = GLOBAL_YMAX - round((GLOBAL_YMAX - ymax) / cellsize) * cellsize
+    return west, north
+
+
 def write_clone_map(pcr, output_path: str, xmin: float, ymin: float,
                     xmax: float, ymax: float, cellsize: float) -> None:
     """Write a PCRaster boolean clone map (all TRUE) for [xmin,xmax] x [ymin,ymax]."""
@@ -100,8 +118,9 @@ def write_clone_map(pcr, output_path: str, xmin: float, ymin: float,
             f"({xmin},{ymin})-({xmax},{ymax}) gives {ncols}x{nrows} cells"
         )
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    west, north = grid_aligned_nw_corner(xmin, ymax, cellsize)
     # setclone(nrRows, nrCols, cellSize, westernBoundary, northernBoundary)
-    pcr.setclone(nrows, ncols, cellsize, xmin, ymin + nrows * cellsize)
+    pcr.setclone(nrows, ncols, cellsize, west, north)
     pcr.report(pcr.spatial(pcr.boolean(1)), output_path)
 
 
@@ -147,8 +166,11 @@ def write_landmask(pcr, output_path: str,
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    # Set clone to this tile's extent, then report the boolean mask
-    pcr.setclone(nrows, ncols, cellsize, xmin, ymin + nrows * cellsize)
+    # Set clone to this tile's extent (NW corner anchored to the global grid so
+    # the landmask, the clone, and every regridded input share one grid), then
+    # report the boolean mask
+    west, north = grid_aligned_nw_corner(xmin, ymax, cellsize)
+    pcr.setclone(nrows, ncols, cellsize, west, north)
     # pcr2numpy / numpy2pcr path: build boolean map from numpy
     active_pcr = pcr.numpy2pcr(pcr.Boolean, active.astype(float), -1)
     pcr.report(active_pcr, output_path)
@@ -339,6 +361,15 @@ def main() -> None:
                 partition['tile_map'], tile_idx,
                 partition['global_xmin'], partition['global_ymax'],
             )
+            if n_active == 0:
+                sys.exit(
+                    f"ERROR: landmask for {code} (tile_idx={tile_idx}) has 0 active "
+                    f"cells. The extents CSV and the partition NPZ are most likely "
+                    f"from different compute_ldd_basins runs (code present but its "
+                    f"cells were filtered/reindexed). Regenerate both from a single "
+                    f"run. An all-FALSE landmask makes PCR-GLOBWB simulate an empty "
+                    f"year and then crash with ZeroDivisionError on totalCellArea."
+                )
             fill_pct = 100.0 * n_active / (ncols_tile * nrows_tile)
             suffix += f"  +  {os.path.basename(lm_path)}  ({n_active:,} active, {fill_pct:.1f}% fill)"
             n_landmask += 1
