@@ -72,13 +72,40 @@ class DeterministicRunner(DynamicModel):
         if self.include_merging_or_modflow:
 
             # netcdf merging options
+            # Be tolerant of a missing/incomplete [mergingOutputOptions] section so a
+            # menial config gap cannot crash the merging ("Global") process at startup
+            # and silently cost us the consolidated output. Missing scalar keys fall
+            # back to sensible defaults; missing report-type keys default to "None"
+            # (that report type is simply not merged). Per-tile NetCDF outputs written
+            # by the worker processes are independent of these options and never lost.
+            nc_report_list = [
+                "outDailyTotNC", "outMonthTotNC", "outMonthAvgNC", "outMonthEndNC", "outMonthMaxNC",
+                "outAnnuaTotNC", "outAnnuaAvgNC", "outAnnuaEndNC", "outAnnuaMaxNC"
+            ]
+
+            merging_defaults = {"formatNetCDF": "NETCDF4",
+                                "zlib": "True",
+                                "delete_unmerged_pcraster_maps": "False"}
+            for nc_report_type in nc_report_list:
+                merging_defaults[nc_report_type] = "None"
+
+            merging_options = dict(getattr(self.configuration, "mergingOutputOptions", {}) or {})
+            missing_keys = [k for k in merging_defaults if k not in merging_options]
+            if not hasattr(self.configuration, "mergingOutputOptions") or missing_keys:
+                logger.warning(
+                    "Configuration is missing the [mergingOutputOptions] section or "
+                    "keys %s; falling back to defaults. No per-tile output is lost, but "
+                    "report types left as 'None' will NOT be merged into global files. "
+                    "Add a [mergingOutputOptions] section to your INI template to "
+                    "control merging explicitly." % str(missing_keys))
+            for k, v in merging_defaults.items():
+                merging_options.setdefault(k, v)
+            self.configuration.mergingOutputOptions = merging_options
+
             self.netcdf_format = self.configuration.mergingOutputOptions['formatNetCDF']
             self.zlib_option = self.configuration.mergingOutputOptions['zlib']
 
             # output files/variables that will be merged
-            nc_report_list = ["outDailyTotNC",
-                              "outMonthTotNC", "outMonthAvgNC", "outMonthEndNC", "outMonthMaxNC",
-                              "outAnnuaTotNC", "outAnnuaAvgNC", "outAnnuaEndNC", "outAnnuaMaxNC"]
             for nc_report_type in nc_report_list:
                 vars(self)[nc_report_type] = self.configuration.mergingOutputOptions[nc_report_type]
 
