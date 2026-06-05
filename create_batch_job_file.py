@@ -11,6 +11,7 @@ PROJECT_CODE = 'pc'
 CONDA_ENV = 'conda_env'
 CONFIG_INI_PATH = 'config'
 EXCLUSIVE = 'excl'
+NAME = 'name'
 _RESOURCES = '__resources__'
 
 help_msg: str = f"""
@@ -23,7 +24,7 @@ to an LSF cluster using the `bsub` command.
 The script fills a predefined job template with user-provided parameters
 such as number of cores, memory limits, queue, and environment settings.
 
-The naming pattern for the output file is \"job_{{%y%m%d%H%M}}.lsf\"
+The naming pattern for the output file is \"{{name}}_{{%y%m%d%H%M}}.lsf\"
 """
 
 # legend:
@@ -68,6 +69,12 @@ parser.add_argument(
     help='Whether the job should take the entire node',
     action='store_true'
 )
+parser.add_argument(
+    f"--{NAME}",
+    type=str,
+    default='job',
+    help='Identifier used in the output filename. Defaults to "job"'
+)
 
 
 def create_batch_job_file():
@@ -100,7 +107,7 @@ def create_batch_job_file():
     else:
         setattr(args, _RESOURCES, f'-R span[ptile={getattr(args, TILE)}]')
 
-    filename = f'job_{datetime.now().strftime("%y%m%d%H%M")}.lsf'
+    filename = f'{getattr(args, NAME)}_{datetime.now().strftime("%y%m%d%H%M")}.lsf'
 
     with open(filename, 'w') as handle:
         handle.write(job_template.format(**vars(args)))
