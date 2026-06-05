@@ -1797,8 +1797,14 @@ def gdalwarpPCR(input,output,cloneOut,tmpDir,isLddMap=False,isNominalMap=False):
     yres = cloneAtt['cellsize']
     te = '-te '+str(xmin)+' '+str(ymin)+' '+str(xmax)+' '+str(ymax)+' '
     tr = '-tr '+str(xres)+' '+str(yres)+' '
-    co = 'gdalwarp '+te+tr+ \
-         ' -srcnodata -3.4028234663852886e+38 -dstnodata mv '+ \
+    # Destination missing value, matching the intermediate GeoTIFF data type.
+    # The previous "-dstnodata mv" was not a number: GDAL parsed it as 0 and
+    # filled the entire warped tile with zeros, which surfaced as a zero
+    # totalCellArea (ZeroDivisionError) on cropped per-tile runs.
+    dstNoData = '-3.4028234663852886e+38'
+    if isLddMap == True or isNominalMap == True: dstNoData = '-2147483648'
+    co = 'gdalwarp -overwrite '+te+tr+ \
+         ' -srcnodata -3.4028234663852886e+38 -dstnodata '+dstNoData+' '+ \
            str(tmpDir)+'tmp_inp.tif '+ \
            str(tmpDir)+'tmp_out.tif'
     cOut,err = subprocess.Popen(co, stdout=subprocess.PIPE,stderr=open(os.devnull),shell=True).communicate()
