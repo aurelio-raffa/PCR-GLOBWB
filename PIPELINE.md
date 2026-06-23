@@ -5,7 +5,7 @@ whole PCR-GLOBWB experiment as **one MLflow-tracked pipeline**, submittable as a
 
 1. **setup** — create the output / working directories
 2. **compute_basins** *(optional)* — compute LDD basins/tiles and the per-tile clone & landmask maps
-3. **inspect_partition** *(optional)* — tile summary + colour-coded partition image (also runnable standalone on a third-party partition)
+3. **inspect_partition** *(optional)* — validate inputs + tile summary + partition image (runnable standalone on a partition NPZ or a directory of clone/landmask maps)
 4. **create_ini** — instantiate a concrete `.ini` from a template
 5. **run_model** — launch PCR-GLOBWB (parallel/tiled or serial)
 6. **plot_output** *(optional, final)* — plot a model output variable (map / animation / time series)
@@ -41,14 +41,14 @@ artifact of the parent run. `skip: true` on a stage makes it optional (used for 
 | `src/stages/run.py` | Sequential orchestrator (`execute_stage` + the `skip` control key) |
 | `src/stages/setup.py` | Stage 1 — make output/working dirs |
 | `src/stages/compute_basins.py` | Stage 2 — Fire wrapper over the two `src/utils` functions (optional) |
-| `src/stages/inspect_partition.py` | Stage 3 *(optional)* — tile summary + partition image (also standalone) |
+| `src/stages/inspect_partition.py` | Stage 3 *(optional)* — validate + tile summary + partition image (also standalone) |
 | `src/stages/create_ini.py` | Stage 4 — Fire wrapper over `create_ini_config` (writes a deterministic `.ini`) |
 | `src/stages/run_model.py` | Stage 5 — launch the model (parallel/serial, configurable) |
 | `src/stages/plot_output.py` | Stage 6 *(optional, final)* — plot a model output variable |
 | `src/utils/ldd_basins.py` | LDD decomposition implementation (`compute_ldd_basins`) |
 | `src/utils/tile_clone_maps.py` | Per-tile clone/landmask implementation (`create_tile_clone_maps`) |
 | `src/utils/ini_config.py` | INI templating implementation (`create_ini_config`) |
-| `src/utils/partition_summary.py` | Tile summary + partition image (`inspect_partition`) |
+| `src/utils/partition_summary.py` | Validate + tile summary + partition image (`inspect_partition`: NPZ / extents / maps dir) |
 | `src/utils/plot_output.py` | netCDF output plotter (`plot_output`) |
 | `src/utils/plotting.py` | **Shared** matplotlib helpers (used by both plotting stages) |
 | `src/utils/io/parse_config.py` | YAML loader with `{{$ENV_VAR}}` expansion |
