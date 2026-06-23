@@ -1,0 +1,34 @@
+# Conda env for the MLflow-tracked PCR-GLOBWB pipeline: the existing pcrglobwb env
+# (conda_env/pcrglobwb_py3_pcraster_4.4.0.yml) PLUS the harness dependencies (pyyaml, mlflow, fire).
+# Same env name as the original, so nothing else about how you activate it changes:
+#
+#     conda env create -f conda_env/pcrglobwb_pipeline.yml      # or `conda env update -f ...` to extend in place
+#     conda activate pcrglobwb_python3
+#
+# Already have the pcrglobwb env? Just add the three harness deps to it instead:
+#     conda install -n pcrglobwb_python3 -c conda-forge pyyaml
+#     conda run    -n pcrglobwb_python3 pip install "mlflow>=2.12,<3.13" fire
+name: pcrglobwb_python3
+
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - numpy
+  - pip
+  - python-dateutil
+  - six
+  - zlib
+  - pcraster>=4.4.0
+  - cdo
+  - nco
+  - ncview
+  # --- harness dependency (config parsing) ---
+  - pyyaml
+  - pip:
+    - netcdf4>=1.5.3
+    # --- harness dependencies (MLflow orchestration + Fire CLIs) ---
+    # mlflow is pinned < 3.13 so the default local file store (./mlruns) keeps working; the sqlite
+    # backend works on any version (`mlflow ui --backend-store-uri sqlite:///mlflow.db`).
+    - "mlflow>=2.12,<3.13"
+    - fire

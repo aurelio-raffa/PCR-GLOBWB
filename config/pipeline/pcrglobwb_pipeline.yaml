@@ -1,0 +1,69 @@
+# =====================================================================================================
+# PCR-GLOBWB pipeline (MLflow-tracked).  Run with:
+#
+#     python run_project.py --config_file=config/pipeline/pcrglobwb_pipeline.yaml \
+#                           --experiment_name=pcrglobwb_run01
+#
+# The orchestrator (src/stages/run.py) executes the `stages` below in order, each as its own MLflow run.
+# `{{$VAR}}` placeholders are filled from environment variables at load time (an undefined var -> ''), so
+# the LSF submission script (config/pipeline/submit_pipeline.lsf) injects the cluster-specific paths.
+# Replace the placeholders / env vars with your own values.
+# =====================================================================================================
+
+project_uri: 'src/stages'          # directory holding the stage scripts (do not change)
+log_artifacts: false               # if true, each stage's `output-path` is logged as an MLflow artifact
+description: 'PCR-GLOBWB 5-arcmin parallel run, tracked end-to-end'
+
+tags:                              # arbitrary tags attached to the parent (orchestrator) run
+    version: '1.0'
+    resolution: '05min'
+
+stages:
+
+    # 1) create the output / working directories (keys are arbitrary; every value is a dir to create) -----
+    - setup:
+        hard_clean: false
+        output_dir:     '{{$PCRG_RUN_DIR}}/output'
+        config_dir:     '{{$PCRG_RUN_DIR}}/ini'
+        clone_maps_dir: '{{$PCRG_RUN_DIR}}/clone_maps'
+        basins_dir:     '{{$PCRG_RUN_DIR}}/basins'
+
+    # 2) OPTIONAL: compute LDD basins/tiles + per-tile clone & landmask maps.
+    #    Set `skip: true` to reuse clone/landmask maps that already exist (then this stage is not run).
+    - compute_basins:
+        skip: false
+        ldd-map:          '{{$PCRG_INPUT_DIR}}/global_05min/routing/ldd/lddsound_05min.map'
+        n-tiles:          53                                   # should match the runner's clone codes (M01..M53)
+        ub-cells:         100000                               # split basins larger than this many cells
+        lb-cells:         500                                  # drop basins smaller than this many cells
+        snap-cellsize:    0.5                                  # snap tile windows to the 30-arcmin grid
+        output-extents:   '{{$PCRG_RUN_DIR}}/basins/tile_extents.csv'
+        output-partition: '{{$PCRG_RUN_DIR}}/basins/partition.npz'
+        output-image:     '{{$PCRG_RUN_DIR}}/basins/partition.png'
+        global-clone:     '{{$PCRG_INPUT_DIR}}/global_05min/cloneMaps/clone_global_05min.map'
+        clone-maps-dir:   '{{$PCRG_RUN_DIR}}/clone_maps'       # writes clonemap_%s.map (+ landmask_%s.map)
+        make-landmask:    true
+        landmask-pattern: 'landmask_%s.map'
+
+    # 3) instantiate the INI from a template; `output-path` is the concrete INI handed to stage 4 -----------
+    - create_ini:
+        base-ini:      'config/05min_parallel.ini'
+        name:          'pcrglobwb_run01'
+        output-dir:    '{{$PCRG_RUN_DIR}}/output'              # -> INI [globalOptions] outputDir
+        clone-map:     '{{$PCRG_RUN_DIR}}/clone_maps/clonemap_%s.map'   # must contain %s for parallel runs
+        landmask:      '{{$PCRG_RUN_DIR}}/clone_maps/landmask_%s.map'   # must contain %s for parallel runs
+        input-dir:     '{{$PCRG_INPUT_DIR}}'
+        clone-areas:   'Global'                               # Global | part_one | part_two | "M01,M03,..."
+        with-merging:  'True'                                 # 'True' merges per-tile outputs into globals
+        low-res-data:  'global_30min'
+        high-res-data: 'global_05min'
+        novalidation:  false                                  # true skips on-disk path checks (local dry-run)
+        output-path:   '{{$PCRG_RUN_DIR}}/ini/pcrglobwb_run.ini'
+
+    # 4) launch the model. mode: parallel (tiled, default) | serial -----------------------------------------
+    - run_model:
+        mode:         'parallel'                              # parallel | serial
+        runner:       'basic'                                 # basic | with_arguments  (parallel mode only)
+        config:       '{{$PCRG_RUN_DIR}}/ini/pcrglobwb_run.ini'   # = create_ini's output-path
+        debug-option: 'parallel'                             # runner's 2nd positional arg (parallel mode)
+        extra-args:   ''                                     # shell-split, appended verbatim
