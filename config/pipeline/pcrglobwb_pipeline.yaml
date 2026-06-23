@@ -27,46 +27,31 @@ stages:
         config_dir:     '{{$PCRG_RUN_DIR}}/ini'
         clone_maps_dir: '{{$PCRG_RUN_DIR}}/clone_maps'
         basins_dir:     '{{$PCRG_RUN_DIR}}/basins'
+        reporting_dir:  '{{$PCRG_RUN_DIR}}/reports'
 
-    # 2) OPTIONAL: compute LDD basins/tiles + per-tile clone & landmask maps.
-    #    Set `skip: true` to reuse clone/landmask maps that already exist (then this stage is not run).
-    - compute_basins:
-        skip: false
-        ldd-map:          '{{$PCRG_INPUT_DIR}}/global_05min/routing/ldd/lddsound_05min.map'
-        n-tiles:          53                                   # should match the runner's clone codes (M01..M53)
-        ub-cells:         100000                               # split basins larger than this many cells
-        lb-cells:         500                                  # drop basins smaller than this many cells
-        snap-cellsize:    0.5                                  # snap tile windows to the 30-arcmin grid
-        output-extents:   '{{$PCRG_RUN_DIR}}/basins/tile_extents.csv'
-        output-partition: '{{$PCRG_RUN_DIR}}/basins/partition.npz'
-        output-image:     '{{$PCRG_RUN_DIR}}/basins/partition.png'
-        global-clone:     '{{$PCRG_INPUT_DIR}}/global_05min/cloneMaps/clone_global_05min.map'
-        clone-maps-dir:   '{{$PCRG_RUN_DIR}}/clone_maps'       # writes clonemap_%s.map (+ landmask_%s.map)
-        make-landmask:    true
-        landmask-pattern: 'landmask_%s.map'
-
-    # 2b) OPTIONAL: inspect the partition (validate inputs + tile summary text + colour-coded image). Also
+    # 2) OPTIONAL: inspect the partition (validate inputs + tile summary text + colour-coded image). Also
     #     runnable standalone on a partition NPZ (`python inspect_partition.py --partition foo.npz ...`) or on
     #     a directory of clone/landmask maps (`--maps_dir DIR --landmask_pattern 'mask_%s.map'`).
     - inspect_partition:
-        partition:      '{{$PCRG_RUN_DIR}}/basins/partition.npz'
-        output-summary: '{{$PCRG_RUN_DIR}}/basins/tiles_summary.txt'
-        output-image:   '{{$PCRG_RUN_DIR}}/basins/partition.png'
-        label:          'pcrglobwb_run01 partition'
+        maps-dir: '{{$CLONE_MAP_DIR}}'
+        landmask-pattern: '{{$LANDMASK_PATTERN}}'     # typically: mask_%s.map or landmask_%s.map
+        clone-pattern: '{{$CLONE_MAP_PATTERN}}'       # typically: clone_%s.map
+        output-summary: '{{$PCRG_RUN_DIR}}/reports/partition_summary.txt'
+        output-image: '{{$PCRG_RUN_DIR}}/reports/partition.png'
 
     # 3) instantiate the INI from a template; `output-path` is the concrete INI handed to stage 4 -----------
     - create_ini:
         base-ini:      'config/05min_parallel.ini'
         name:          'pcrglobwb_run01'
         output-dir:    '{{$PCRG_RUN_DIR}}/output'              # -> INI [globalOptions] outputDir
-        clone-map:     '{{$PCRG_RUN_DIR}}/clone_maps/clonemap_%s.map'   # must contain %s for parallel runs
-        landmask:      '{{$PCRG_RUN_DIR}}/clone_maps/landmask_%s.map'   # must contain %s for parallel runs
+        clone-map:     '{{$CLONE_MAP_DIR}}/{{$CLONE_MAP_PATTERN}}'      # must contain %s for parallel runs
+        landmask:      '{{$CLONE_MAP_DIR}}/{{$LANDMASK_PATTERN}}'       # must contain %s for parallel runs
         input-dir:     '{{$PCRG_INPUT_DIR}}'
         clone-areas:   'Global'                               # Global | part_one | part_two | "M01,M03,..."
         with-merging:  'True'                                 # 'True' merges per-tile outputs into globals
         low-res-data:  'global_30min'
         high-res-data: 'global_05min'
-        novalidation:  false                                  # true skips on-disk path checks (local dry-run)
+        novalidation:  true                                  # true skips on-disk path checks (local dry-run)
         output-path:   '{{$PCRG_RUN_DIR}}/ini/pcrglobwb_run.ini'
 
     # 4) launch the model. mode: parallel (tiled, default) | serial -----------------------------------------
@@ -80,8 +65,8 @@ stages:
     # 5) OPTIONAL FINAL STAGE: plot a model output variable (map / animation / time series). Skipped by
     #    default — set skip:false and point nc-path/variable at a file the run actually produced.
     - plot_output:
-        skip:     true
+        skip:     false
         nc-path:  '{{$PCRG_RUN_DIR}}/output/global/netcdf/discharge_monthAvg_output.nc'
         variable: 'discharge'
-        outdir:   '{{$PCRG_RUN_DIR}}/figures'
+        outdir:   '{{$PCRG_RUN_DIR}}/reports'
         log:      true
