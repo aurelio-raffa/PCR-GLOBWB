@@ -5,8 +5,10 @@ whole PCR-GLOBWB experiment as **one MLflow-tracked pipeline**, submittable as a
 
 1. **setup** — create the output / working directories
 2. **compute_basins** *(optional)* — compute LDD basins/tiles and the per-tile clone & landmask maps
-3. **create_ini** — instantiate a concrete `.ini` from a template
-4. **run_model** — launch PCR-GLOBWB (parallel/tiled or serial)
+3. **inspect_partition** *(optional)* — tile summary + colour-coded partition image (also runnable standalone on a third-party partition)
+4. **create_ini** — instantiate a concrete `.ini` from a template
+5. **run_model** — launch PCR-GLOBWB (parallel/tiled or serial)
+6. **plot_output** *(optional, final)* — plot a model output variable (map / animation / time series)
 
 Each step is a Fire-CLI under `src/stages/`. The decomposition and INI logic lives in `src/utils/` as plain
 functions; the stages and the root CLI tools both call those functions, so there is **one implementation**
@@ -17,12 +19,14 @@ shared between the pipeline and the standalone command-line tools (no shelling o
 ```
 run_project.py  ──mlflow.projects.run──▶  src/stages/run.py  (orchestrator: 1 parent MLflow run)
                                               │   for each stage:  mlflow.run ─▶ python src/stages/<stage>.py --k v
-                                              ├─ setup.py          → os.makedirs(...)
-                                              ├─ compute_basins.py → src.utils.ldd_basins.compute_ldd_basins
-                                              │                      + src.utils.tile_clone_maps.create_tile_clone_maps
-                                              ├─ create_ini.py     → src.utils.ini_config.create_ini_config  (→ output-path)
-                                              └─ run_model.py      → subprocess: model/parallel_pcrglobwb_runner*.py
-                                                                                 | model/deterministic_runner.py
+                                              ├─ setup.py            → os.makedirs(...)
+                                              ├─ compute_basins.py   → src.utils.ldd_basins.compute_ldd_basins
+                                              │                        + src.utils.tile_clone_maps.create_tile_clone_maps
+                                              ├─ inspect_partition.py→ src.utils.partition_summary.inspect_partition
+                                              ├─ create_ini.py       → src.utils.ini_config.create_ini_config  (→ output-path)
+                                              ├─ run_model.py        → subprocess: model/parallel_pcrglobwb_runner*.py
+                                              │                                    | model/deterministic_runner.py
+                                              └─ plot_output.py      → src.utils.plot_output.plot_output
 ```
 
 The orchestrator opens **one parent ("orchestrator") run** and runs **one child run per stage** (so each
@@ -37,18 +41,24 @@ artifact of the parent run. `skip: true` on a stage makes it optional (used for 
 | `src/stages/run.py` | Sequential orchestrator (`execute_stage` + the `skip` control key) |
 | `src/stages/setup.py` | Stage 1 — make output/working dirs |
 | `src/stages/compute_basins.py` | Stage 2 — Fire wrapper over the two `src/utils` functions (optional) |
-| `src/stages/create_ini.py` | Stage 3 — Fire wrapper over `create_ini_config` (writes a deterministic `.ini`) |
-| `src/stages/run_model.py` | Stage 4 — launch the model (parallel/serial, configurable) |
+| `src/stages/inspect_partition.py` | Stage 3 *(optional)* — tile summary + partition image (also standalone) |
+| `src/stages/create_ini.py` | Stage 4 — Fire wrapper over `create_ini_config` (writes a deterministic `.ini`) |
+| `src/stages/run_model.py` | Stage 5 — launch the model (parallel/serial, configurable) |
+| `src/stages/plot_output.py` | Stage 6 *(optional, final)* — plot a model output variable |
 | `src/utils/ldd_basins.py` | LDD decomposition implementation (`compute_ldd_basins`) |
 | `src/utils/tile_clone_maps.py` | Per-tile clone/landmask implementation (`create_tile_clone_maps`) |
 | `src/utils/ini_config.py` | INI templating implementation (`create_ini_config`) |
+| `src/utils/partition_summary.py` | Tile summary + partition image (`inspect_partition`) |
+| `src/utils/plot_output.py` | netCDF output plotter (`plot_output`) |
+| `src/utils/plotting.py` | **Shared** matplotlib helpers (used by both plotting stages) |
 | `src/utils/io/parse_config.py` | YAML loader with `{{$ENV_VAR}}` expansion |
 | `src/utils/shell.py` | `run_command` / `python_tool` (used by the `run_model` stage) |
-| `compute_ldd_basins.py`, `create_tile_clone_maps.py`, `create_ini_config.py` | Root **argparse CLI shims** over the `src/utils` functions (original CLIs preserved) |
+| `compute_ldd_basins.py`, `create_tile_clone_maps.py`, `create_ini_config.py`, `inspect_partition.py`, `plot_simulation_output.py` | Root **argparse CLI shims** over the `src/utils` functions |
+| `plot_simulation_output_notebook.py` | Self-contained Jupyter `quicklook()` helper (numpy/netCDF4/matplotlib only) |
 | `create_job_file.py` | Unified LSF generator: `deterministic` / `parallel` / `pipeline` modes |
 | `create_batch_job_file.py`, `create_parallel_batch_job_file.py` | Deprecation shims → `create_job_file.py` |
 | `config/pipeline/pcrglobwb_pipeline.yaml` | The pipeline definition (edit this) |
-| `conda_env/pcrglobwb_pipeline.yml` | pcraster env + `mlflow`, `fire`, `pyyaml` |
+| `conda_env/pcrglobwb_pipeline.yml` | pcraster env + `mlflow`, `fire`, `pyyaml`, `matplotlib` |
 
 ## Setup
 

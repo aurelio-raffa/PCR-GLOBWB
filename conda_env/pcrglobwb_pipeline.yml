@@ -25,6 +25,9 @@ dependencies:
   - ncview
   # --- harness dependency (config parsing) ---
   - pyyaml
+  # --- plotting stages (inspect_partition, plot_output); cartopy is optional (coastlines) ---
+  - matplotlib
+  - pillow
   - pip:
     - netcdf4>=1.5.3
     # --- harness dependencies (MLflow orchestration + Fire CLIs) ---
