@@ -1262,9 +1262,8 @@ def save_partition_image(compact_2d: np.ndarray, parent: np.ndarray,
     the geographic bounding box of each tile is drawn as a rectangle.
     """
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
+        from .plotting import pyplot, save_figure
+        plt = pyplot()
     except ImportError:
         print("WARNING: matplotlib not available — skipping image.", file=sys.stderr)
         return
@@ -1373,8 +1372,7 @@ def save_partition_image(compact_2d: np.ndarray, parent: np.ndarray,
     ax.axis('off')
     ax.set_title(f'Land partition — {n_tiles} tiles', fontsize=13, pad=6)
     plt.tight_layout(pad=0.3)
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
+    save_figure(plt, fig, output_path, dpi=150, announce=False)
     print(f"Partition image saved: {output_path}", flush=True)
 
 
@@ -1415,9 +1413,8 @@ def plot_merge_dendrogram(n_comp: int,
     merge_history entries: (cid_a, cid_b, combined_size, running_max, is_viol)
     """
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
+        from .plotting import pyplot, save_figure
+        plt = pyplot()
         from matplotlib.collections import LineCollection
     except ImportError:
         print('WARNING: matplotlib not available — skipping dendrogram.',
@@ -1601,8 +1598,7 @@ def plot_merge_dendrogram(n_comp: int,
     # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
+    save_figure(plt, fig, output_path, dpi=150, announce=False)
     print(f'Merge dendrogram saved: {output_path}', flush=True)
 
 

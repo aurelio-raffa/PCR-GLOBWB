@@ -45,6 +45,15 @@ stages:
         make-landmask:    true
         landmask-pattern: 'landmask_%s.map'
 
+    # 2b) OPTIONAL: inspect the partition (tile summary text + colour-coded image). Also runnable standalone
+    #     on a third-party partition: `python inspect_partition.py --partition foo.npz --output_image foo.png`
+    #     or `python inspect_partition.py --landmask_dir their_maps --extents their_extents.csv`.
+    - inspect_partition:
+        partition:      '{{$PCRG_RUN_DIR}}/basins/partition.npz'
+        output-summary: '{{$PCRG_RUN_DIR}}/basins/tiles_summary.txt'
+        output-image:   '{{$PCRG_RUN_DIR}}/basins/partition.png'
+        label:          'pcrglobwb_run01 partition'
+
     # 3) instantiate the INI from a template; `output-path` is the concrete INI handed to stage 4 -----------
     - create_ini:
         base-ini:      'config/05min_parallel.ini'
@@ -67,3 +76,12 @@ stages:
         config:       '{{$PCRG_RUN_DIR}}/ini/pcrglobwb_run.ini'   # = create_ini's output-path
         debug-option: 'parallel'                             # runner's 2nd positional arg (parallel mode)
         extra-args:   ''                                     # shell-split, appended verbatim
+
+    # 5) OPTIONAL FINAL STAGE: plot a model output variable (map / animation / time series). Skipped by
+    #    default — set skip:false and point nc-path/variable at a file the run actually produced.
+    - plot_output:
+        skip:     true
+        nc-path:  '{{$PCRG_RUN_DIR}}/output/global/netcdf/discharge_monthAvg_output.nc'
+        variable: 'discharge'
+        outdir:   '{{$PCRG_RUN_DIR}}/figures'
+        log:      true
