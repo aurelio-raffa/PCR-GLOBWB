@@ -73,20 +73,40 @@ conda activate pcrglobwb_python3
 
 ## Configure
 
-Edit `config/pipeline/pcrglobwb_pipeline.yaml`. Cluster paths come from env vars expanded via `{{$VAR}}`
-(set by `create_job_file.py pipeline` at submission time, so **no real path is ever committed**):
+Edit `config/pipeline/pcrglobwb_pipeline.yaml`. Every path/pattern in it is an environment-variable
+placeholder `{{$VAR}}`, expanded from the process environment when the YAML is loaded (an undefined var →
+`''`). The values are injected at submission time by `create_job_file.py pipeline` (see **Run**), so **no real
+path is ever committed** — the repository only ever contains the placeholders, never your cluster paths.
 
-- `PCRG_RUN_DIR` — run root (outputs, INIs, clone maps, basins land here)
-- `PCRG_INPUT_DIR` — base of the PCR-GLOBWB input tree
+### Placeholders
 
-Key conventions:
+| Placeholder | Meaning | Consumed by (YAML key) |
+|-------------|---------|------------------------|
+| `PCRG_RUN_DIR` | run root — `output/`, `ini/`, `reports/`, `clone_maps/`, `basins/` land here | `setup.*`, `create_ini.output-dir` / `output-path`, `run_model.config`, `inspect_partition.output-*`, `plot_output.*` |
+| `PCRG_INPUT_DIR` | base of the PCR-GLOBWB input tree | `create_ini.input-dir` |
+| `CLONE_MAP_DIR` | directory holding the per-tile clone & landmask maps | `inspect_partition.maps-dir`; `create_ini.clone-map` / `landmask` (as `{{$CLONE_MAP_DIR}}/{{$…_PATTERN}}`) |
+| `CLONE_MAP_PATTERN` | clone-map filename pattern — **must contain `%s`** (e.g. `clone_%s.map`) | `inspect_partition.clone-pattern`, `create_ini.clone-map` |
+| `LANDMASK_PATTERN` | landmask filename pattern — **must contain `%s`** (e.g. `mask_%s.map` or `landmask_%s.map`) | `inspect_partition.landmask-pattern`, `create_ini.landmask` |
 
-- **Optional stage 2** — set `skip: true` on `compute_basins` to reuse clone/landmask maps you already have.
-- **The hand-off** — `create_ini`'s `output-path` is the exact `.ini` that `run_model`'s `config` consumes
-  (already wired to the same path in the template).
-- **Parallel runs** — `clone-map`/`landmask` must contain `%s` (e.g. `.../clonemap_%s.map`). `n-tiles` should
-  match the runner's expected clone codes (default 53).
-- **Serial runs** — set `run_model.mode: serial`; `compute_basins` can be skipped.
+Add your own placeholders freely: any `{{$FOO}}` in the YAML is filled from `$FOO` (set it via
+`create_job_file.py pipeline --env FOO=...`, see **Run**).
+
+### Wiring notes
+
+- **Provided clone/landmask maps (the shipped default).** The template points at an *existing* set of maps
+  rather than generating tiles: `inspect_partition` runs in **directory mode** (`maps-dir` +
+  `clone-pattern` + `landmask-pattern`) to validate them and write a summary + image to `reports/`, and
+  `create_ini` assembles the INI `cloneMap` / `landmask` fields as `{{$CLONE_MAP_DIR}}/{{$CLONE_MAP_PATTERN}}`
+  and `{{$CLONE_MAP_DIR}}/{{$LANDMASK_PATTERN}}` (both keep the `%s`, which the parallel runner substitutes per
+  clone). For the official 05-arcmin masks, e.g. `CLONE_MAP_DIR=clone_landmask_maps/20260508_partition`,
+  `CLONE_MAP_PATTERN=clone_%s.map`, `LANDMASK_PATTERN=mask_%s.map`.
+- **Generate tiles instead.** Add the optional `compute_basins` stage (it writes `clonemap_%s.map` /
+  `landmask_%s.map` into `{{$PCRG_RUN_DIR}}/clone_maps`) and set the patterns/`CLONE_MAP_DIR` to point there.
+- **The hand-off** — `create_ini.output-path` is the exact `.ini` that `run_model.config` consumes (same path).
+- **Reports** — `setup.reporting_dir` (`{{$PCRG_RUN_DIR}}/reports`) is where `inspect_partition` and
+  `plot_output` write their summary / figures.
+- **Parallel vs serial** — `clone-map` / `landmask` must contain `%s` and `clone-areas` must match the runner's
+  clone codes; for a single global/serial run set `run_model.mode: serial`.
 
 ## Run (one LSF job)
 
@@ -100,10 +120,17 @@ python create_job_file.py pipeline \
     --experiment_name pcrglobwb_run01 \
     --run_dir   /scratch/$USER/pcrglobwb/run01 \
     --input_dir /data/pcrglobwb/inputs \
-    --repo_dir  "$PWD"
+    --repo_dir  "$PWD" \
+    --env CLONE_MAP_DIR=clone_landmask_maps/20260508_partition \
+    --env "CLONE_MAP_PATTERN=clone_%s.map" \
+    --env "LANDMASK_PATTERN=mask_%s.map"
 # prints e.g. pipeline_2606231530.lsf ; then:
 bsub < pipeline_2606231530.lsf
 ```
+
+`--run_dir` / `--input_dir` are shorthand for `PCRG_RUN_DIR` / `PCRG_INPUT_DIR`; every other placeholder is set
+with a repeatable `--env KEY=VALUE` (quote values containing `%s`). Each one becomes an `export KEY=VALUE` line
+in the generated (git-ignored) `.lsf`, so your real paths live only in that file, never in the repo.
 
 A parallel run launches all tiles on one node, so request at least `n_clones + 1` cores (54 for the default
 53 clones + merging). The same tool still generates the classic single-runner jobs:
@@ -118,6 +145,7 @@ python create_job_file.py parallel      --nc 54 --mem 128G ... --config <ini> --
 
 ```bash
 export PCRG_RUN_DIR=/tmp/pcrg_run PCRG_INPUT_DIR=/tmp/pcrg_inputs
+export CLONE_MAP_DIR=clone_landmask_maps/20260508_partition CLONE_MAP_PATTERN='clone_%s.map' LANDMASK_PATTERN='mask_%s.map'
 python run_project.py --config_file=config/pipeline/pcrglobwb_pipeline.yaml --experiment_name=smoke
 ```
 
@@ -129,7 +157,7 @@ mlflow ui            # default ./mlruns file store  →  http://127.0.0.1:5000
 mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
 
-Each run shows the parent run (pipeline-YAML artifact + your `tags`) and the four child stage runs with their
+Each run shows the parent run (pipeline-YAML artifact + your `tags`) and one child run per stage with their
 parameters. Use `--tracking_uri` on `run_project.py` (or `create_job_file.py pipeline --tracking_uri`, or
 `MLFLOW_TRACKING_URI`) to log to a shared sqlite/remote store. `mlflow` is pinned `<3.13` so the default file
 store keeps working.
