@@ -1262,7 +1262,7 @@ def save_partition_image(compact_2d: np.ndarray, parent: np.ndarray,
     the geographic bounding box of each tile is drawn as a rectangle.
     """
     try:
-        from .plotting import pyplot, save_figure
+        from .plotting import pyplot, save_figure, get_cmap
         plt = pyplot()
     except ImportError:
         print("WARNING: matplotlib not available — skipping image.", file=sys.stderr)
@@ -1294,7 +1294,7 @@ def save_partition_image(compact_2d: np.ndarray, parent: np.ndarray,
     filtered_mask = (final_2d == -2)
     img[filtered_mask] = [0.0, 0.0, 0.0]
 
-    cmap   = plt.cm.get_cmap('tab20', 20)
+    cmap   = get_cmap('tab20', 20)
     colors = np.array([cmap(i)[:3] for i in range(20)], dtype=np.float32)
 
     # Assign colors in batches of same color-index (avoids per-tile loop)
