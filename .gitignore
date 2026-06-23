@@ -1,6 +1,9 @@
 # ignore cartesius job ouput
 *.out
 
+# ignore LSF job files
+*.lsf
+
 # ignore pcraster maps
 *.map
 *.ldd
@@ -59,3 +62,8 @@ docs/_build/
 
 # PyBuilder
 target/
+
+# MLflow & harness
+output.log
+mlruns/
+mlflow.db
