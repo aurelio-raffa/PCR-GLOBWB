@@ -6,7 +6,7 @@ The implementation lives in ``src/utils/partition_summary.py`` (shared with the 
 
     # a directory of per-tile clone/landmask maps (.map and/or .nc); validates the convention, derives each
     # bounding box from the file header, reconstructs the partition, and reports stats + an image:
-    python inspect_partition.py --maps_dir clone_landmask_maps/20260508_partition \
+    python inspect_partition.py --maps_dir path/to/clone_landmask_maps \
         --clone_pattern 'clone_%s.map' --output_summary partition_summary.txt --output_image partition.png
     #   (add --landmask_pattern 'landmask_%s.map' when per-tile landmasks are present)
 

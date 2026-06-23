@@ -98,7 +98,7 @@ Add your own placeholders freely: any `{{$FOO}}` in the YAML is filled from `$FO
   `clone-pattern` + `landmask-pattern`) to validate them and write a summary + image to `reports/`, and
   `create_ini` assembles the INI `cloneMap` / `landmask` fields as `{{$CLONE_MAP_DIR}}/{{$CLONE_MAP_PATTERN}}`
   and `{{$CLONE_MAP_DIR}}/{{$LANDMASK_PATTERN}}` (both keep the `%s`, which the parallel runner substitutes per
-  clone). For the official 05-arcmin masks, e.g. `CLONE_MAP_DIR=clone_landmask_maps/20260508_partition`,
+  clone). For the official 05-arcmin masks, e.g. `CLONE_MAP_DIR=path/to/clone_landmask_maps`,
   `CLONE_MAP_PATTERN=clone_%s.map`, `LANDMASK_PATTERN=mask_%s.map`.
 - **Generate tiles instead.** Add the optional `compute_basins` stage (it writes `clonemap_%s.map` /
   `landmask_%s.map` into `{{$PCRG_RUN_DIR}}/clone_maps`) and set the patterns/`CLONE_MAP_DIR` to point there.
@@ -121,7 +121,7 @@ python create_job_file.py pipeline \
     --run_dir   /scratch/$USER/pcrglobwb/run01 \
     --input_dir /data/pcrglobwb/inputs \
     --repo_dir  "$PWD" \
-    --env CLONE_MAP_DIR=clone_landmask_maps/20260508_partition \
+    --env CLONE_MAP_DIR=path/to/clone_landmask_maps \
     --env "CLONE_MAP_PATTERN=clone_%s.map" \
     --env "LANDMASK_PATTERN=mask_%s.map"
 # prints e.g. pipeline_2606231530.lsf ; then:
@@ -145,7 +145,7 @@ python create_job_file.py parallel      --nc 54 --mem 128G ... --config <ini> --
 
 ```bash
 export PCRG_RUN_DIR=/tmp/pcrg_run PCRG_INPUT_DIR=/tmp/pcrg_inputs
-export CLONE_MAP_DIR=clone_landmask_maps/20260508_partition CLONE_MAP_PATTERN='clone_%s.map' LANDMASK_PATTERN='mask_%s.map'
+export CLONE_MAP_DIR=path/to/clone_landmask_maps CLONE_MAP_PATTERN='clone_%s.map' LANDMASK_PATTERN='mask_%s.map'
 python run_project.py --config_file=config/pipeline/pcrglobwb_pipeline.yaml --experiment_name=smoke
 ```
 
