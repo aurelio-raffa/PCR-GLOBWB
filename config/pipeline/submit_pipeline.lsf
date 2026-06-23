@@ -1,0 +1,40 @@
+#!/bin/sh
+# =====================================================================================================
+# LSF submission script for the MLflow-tracked PCR-GLOBWB pipeline.
+#
+#     bsub < config/pipeline/submit_pipeline.lsf
+#
+# One LSF job runs the whole pipeline: setup -> (optional) compute_basins -> create_ini -> run_model.
+# For a parallel run, the model launch spawns one process per tile/clone ON THIS NODE, so request enough
+# cores: with the default 53 clones + the merging process you need at least 54 (see create_parallel_batch_job_file.py).
+# Edit the #BSUB directives and the exported paths below, then submit.
+# =====================================================================================================
+
+#BSUB -n 54
+#BSUB -R span[ptile=54]
+#BSUB -M 128G
+#BSUB -q <QUEUE>
+#BSUB -o <WORKDIR>/pipeline.%J.out
+#BSUB -e <WORKDIR>/pipeline.%J.err
+#BSUB -P <PROJECT_CODE>
+#BSUB -J pcrglobwb_pipeline
+
+# --- cluster-specific paths consumed by config/pipeline/pcrglobwb_pipeline.yaml via {{$VAR}} ----------
+export PCRG_RUN_DIR=/scratch/$USER/pcrglobwb/run01     # run root: outputs, INIs, clone maps, basins land here
+export PCRG_INPUT_DIR=/data/pcrglobwb/inputs           # base of the PCR-GLOBWB input tree
+
+# --- (optional) shared MLflow store; default is the ./mlruns file store in the repo dir ---------------
+# export MLFLOW_TRACKING_URI=sqlite:///$PCRG_RUN_DIR/mlflow.db
+
+# --- environment (extend or replace with conda_env/pcrglobwb_pipeline.yml: pcraster + mlflow/fire/pyyaml) -
+module load anaconda
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate pcrglobwb_python3
+
+# --- run from the repo root (the directory containing run_project.py) ---------------------------------
+cd <PATH_TO_REPO>
+
+python3 run_project.py \
+    --config_file=config/pipeline/pcrglobwb_pipeline.yaml \
+    --experiment_name=pcrglobwb_run01
+    # --tracking_uri=$MLFLOW_TRACKING_URI    # uncomment to log to a non-default store
