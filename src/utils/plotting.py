@@ -23,10 +23,25 @@ def pyplot(headless: bool = True):
     return plt
 
 
+def get_cmap(name, lut=None):
+    """Return colormap ``name`` (optionally resampled to ``lut`` levels), across matplotlib versions.
+
+    ``matplotlib.cm.get_cmap`` / ``pyplot.cm.get_cmap`` were removed in matplotlib 3.11; the colormap registry
+    (``matplotlib.colormaps``, available since 3.6) is the supported replacement, with a legacy fallback.
+    """
+    import matplotlib
+    registry = getattr(matplotlib, 'colormaps', None)
+    if registry is not None:                                   # matplotlib >= 3.6
+        cmap = registry[name]
+        return cmap.resampled(lut) if lut else cmap
+    import matplotlib.cm as mcm                                 # matplotlib < 3.6 (legacy)
+    return mcm.get_cmap(name, lut)
+
+
 def transparent_nan_cmap(plt, name):
     """A copy of colormap ``name`` whose 'bad' (NaN/masked) colour is transparent."""
     import copy
-    cm = copy.copy(plt.get_cmap(name))
+    cm = copy.copy(get_cmap(name))
     cm.set_bad(color='none')        # NaN cells transparent -> the axes background shows through
     return cm
 
