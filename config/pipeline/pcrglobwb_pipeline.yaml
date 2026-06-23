@@ -45,9 +45,9 @@ stages:
         make-landmask:    true
         landmask-pattern: 'landmask_%s.map'
 
-    # 2b) OPTIONAL: inspect the partition (tile summary text + colour-coded image). Also runnable standalone
-    #     on a third-party partition: `python inspect_partition.py --partition foo.npz --output_image foo.png`
-    #     or `python inspect_partition.py --landmask_dir their_maps --extents their_extents.csv`.
+    # 2b) OPTIONAL: inspect the partition (validate inputs + tile summary text + colour-coded image). Also
+    #     runnable standalone on a partition NPZ (`python inspect_partition.py --partition foo.npz ...`) or on
+    #     a directory of clone/landmask maps (`--maps_dir DIR --landmask_pattern 'mask_%s.map'`).
     - inspect_partition:
         partition:      '{{$PCRG_RUN_DIR}}/basins/partition.npz'
         output-summary: '{{$PCRG_RUN_DIR}}/basins/tiles_summary.txt'
