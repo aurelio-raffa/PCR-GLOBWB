@@ -1,30 +1,23 @@
 """Stage 2 (optional) -- compute LDD basins/tiles and the per-tile clone & landmask maps.
 
-Thin wrapper over the two existing root tools:
+Calls the implementations in ``src/utils`` directly (no subprocess):
 
-  1. ``compute_ldd_basins.py``     -- LDD map -> tile extents CSV + partition NPZ (+ optional image/dendrogram)
-  2. ``create_tile_clone_maps.py`` -- partition/extents + global clone map -> ``clonemap_%s.map`` (and, from
-                                      the partition, ``landmask_%s.map``) under ``clone_maps_dir``
+  1. ``src.utils.ldd_basins.compute_ldd_basins``     -- LDD map -> tile extents CSV + partition NPZ
+  2. ``src.utils.tile_clone_maps.create_tile_clone_maps`` -- extents (+partition) + global clone map ->
+                                                          ``clonemap_%s.map`` (and ``landmask_%s.map``)
 
-The ``%s`` clone/landmask maps it produces are exactly what the parallel runner expects in the INI's
-``cloneMap``/``landmask`` fields. Make this stage optional by setting ``skip: true`` on it in the pipeline
-YAML (e.g. when the tiles already exist from a previous run).
-
-All paths are resolved against the repo root (the stages run with the repo root as the working directory).
+The ``%s`` maps it produces are what the parallel runner expects in the INI's ``cloneMap``/``landmask`` fields.
+Make this stage optional with ``skip: true`` in the pipeline YAML (e.g. when the tiles already exist).
 """
-import os
-
+from __init__ import root_path  # noqa: F401  -- runs src/stages/__init__.py so `import src...` resolves
 from fire import Fire
 
-from __init__ import root_path
-from src.utils.shell import run_command, python_tool
+from src.utils.ldd_basins import compute_ldd_basins
+from src.utils.tile_clone_maps import create_tile_clone_maps
 
 
-def _opt(flag, value):
-    """Return ``[flag, value]`` when ``value`` is set, else ``[]`` (for argparse-optional flags)."""
-    if value is None or value == '':
-        return []
-    return [flag, str(value)]
+def _int_or_none(value):
+    return int(value) if value not in (None, '') else None
 
 
 def compute_basins(
@@ -36,62 +29,42 @@ def compute_basins(
         clone_maps_dir: str,
         ub_cells=None,
         lb_cells=None,
-        snap_cellsize=None,
+        snap_cellsize=0.5,
         output_image: str = None,
         output_dendrogram: str = None,
         make_landmask: bool = True,
-        landmask_pattern: str = None,
+        clone_pattern: str = 'clonemap_%s.map',
+        landmask_pattern: str = 'landmask_%s.map',
 ) -> None:
     """Compute the domain decomposition and write the per-tile clone/landmask maps.
 
-    Args:
-        ldd_map: Path to the PCRaster LDD map (``--ldd``).
-        n_tiles: Target number of tiles after aggregation (``--n_tiles``).
-        output_extents: Output tile-extents CSV (``--output_extents``).
-        output_partition: Output partition ``.npz`` (``--output_partition``); needed for landmasks.
-        global_clone: Global PCRaster clone map fed to ``create_tile_clone_maps.py`` (``--global_clone``).
-        clone_maps_dir: Output directory for the per-tile ``clonemap_%s.map`` / ``landmask_%s.map``.
-        ub_cells, lb_cells, snap_cellsize: Optional split/filter/snap controls forwarded to
-            ``compute_ldd_basins.py`` when set.
-        output_image, output_dendrogram: Optional diagnostic outputs forwarded when set.
-        make_landmask: If True (default), build per-tile landmasks from the partition; otherwise only clone
-            maps are written (from the extents CSV).
-        landmask_pattern: Optional override for the landmask filename pattern (must contain ``%s``).
+    Args mirror the two underlying tools (see their docstrings in ``src/utils``). ``make_landmask`` toggles
+    whether per-tile landmasks are cut from the partition NPZ (recommended for parallel runs).
     """
-    # 1) domain decomposition -------------------------------------------------------------------------------
-    basins_cmd = python_tool(
-        'compute_ldd_basins.py',
-        '--ldd', ldd_map,
-        '--n_tiles', str(n_tiles),
-        '--output_extents', output_extents,
-        '--output_partition', output_partition,
-        *_opt('--ub_cells', ub_cells),
-        *_opt('--lb_cells', lb_cells),
-        *_opt('--snap_cellsize', snap_cellsize),
-        *_opt('--output_image', output_image),
-        *_opt('--output_dendrogram', output_dendrogram),
+    # 1) LDD decomposition -> tile extents CSV + partition NPZ
+    compute_ldd_basins(
+        ldd=ldd_map,
+        n_tiles=int(n_tiles),
+        output_extents=output_extents,
+        output_partition=output_partition,
+        ub_cells=_int_or_none(ub_cells),
+        lb_cells=_int_or_none(lb_cells),
+        snap_cellsize=float(snap_cellsize) if snap_cellsize not in (None, '') else 0.5,
+        output_image=output_image or None,
+        output_dendrogram=output_dendrogram or None,
     )
-    run_command(basins_cmd, cwd=root_path)
 
-    # 2) per-tile clone (+landmask) maps -------------------------------------------------------------------
-    os.makedirs(os.path.join(root_path, clone_maps_dir), exist_ok=True)
-    if make_landmask:
-        # the partition NPZ carries the tile_map needed to cut per-tile landmasks
-        clone_cmd = python_tool(
-            'create_tile_clone_maps.py',
-            '--global_clone', global_clone,
-            '--output_dir', clone_maps_dir,
-            '--partition', output_partition,
-            *_opt('--landmask_pattern', landmask_pattern),
-        )
-    else:
-        clone_cmd = python_tool(
-            'create_tile_clone_maps.py',
-            '--global_clone', global_clone,
-            '--output_dir', clone_maps_dir,
-            '--extents', output_extents,
-        )
-    run_command(clone_cmd, cwd=root_path)
+    # 2) per-tile clone (+landmask) maps. The extents CSV is always required to write any maps; the partition
+    #    NPZ is additionally required to cut per-tile landmasks (passing only --partition would otherwise make
+    #    the tool print a blank template and exit without writing anything).
+    create_tile_clone_maps(
+        global_clone=global_clone,
+        output_dir=clone_maps_dir,
+        extents=output_extents,
+        filename_pattern=clone_pattern,
+        partition=output_partition if make_landmask else None,
+        landmask_pattern=landmask_pattern,
+    )
 
 
 if __name__ == '__main__':
