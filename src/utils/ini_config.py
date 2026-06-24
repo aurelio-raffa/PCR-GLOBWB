@@ -46,6 +46,7 @@ highResData = 'highResData'         # High-resolution subdirectory (5-minute res
 novalidation = 'novalidation'       # Flag to skip path validation checks
 cloneAreas = 'cloneAreas'           # Clone/tile selection for parallel execution
 with_merging = 'with_merging'       # Whether to merge outputs after parallel run
+globalCloneMap = 'globalCloneMap'   # Whole-domain clone for the merging/global process (parallel runs)
 
 # Default values for optional parallel execution parameters
 CLONE_AREAS_DEFAULT = 'Global'      # Run all clones (M01-M53)
@@ -147,6 +148,16 @@ parser.add_argument(
         f'by parallel templates). Defaults to "{WITH_MERGING_DEFAULT}".'
     )
 )
+parser.add_argument(
+    f"--{globalCloneMap}",
+    default='None',
+    type=str,
+    help=(
+        'Whole-domain clone map for the merging/global process in a parallel run '
+        '(only consumed by parallel templates). Defaults to "None", in which case '
+        'the merging runner falls back to the routing lddMap.'
+    )
+)
 
 
 def validate_paths_in_ini(
@@ -245,7 +256,7 @@ def validate_paths_in_ini(
 def create_ini_config(name=None, base_ini=None, outputDir=None, cloneMap=None, inputDir=None,
                       landmask='None', institution='""', title='""', description='""',
                       lowResData='global_30min', highResData='global_05min', novalidation=False,
-                      cloneAreas='Global', with_merging='True', output_path=None):
+                      cloneAreas='Global', with_merging='True', globalCloneMap='None', output_path=None):
     """
     Generate a PCR-GLOBWB configuration file from a template (importable form).
 
@@ -298,7 +309,7 @@ def create_ini_config(name=None, base_ini=None, outputDir=None, cloneMap=None, i
         name=name, base_ini=base_ini, outputDir=outputDir, cloneMap=cloneMap, inputDir=inputDir,
         landmask=landmask, institution=institution, title=title, description=description,
         lowResData=lowResData, highResData=highResData, novalidation=novalidation,
-        cloneAreas=cloneAreas, with_merging=with_merging,
+        cloneAreas=cloneAreas, with_merging=with_merging, globalCloneMap=globalCloneMap,
     )
     full_ini = base.format(**substitutions)
 

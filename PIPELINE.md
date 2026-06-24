@@ -7,8 +7,9 @@ whole PCR-GLOBWB experiment as **one MLflow-tracked pipeline**, submittable as a
 2. **compute_basins** *(optional)* — compute LDD basins/tiles and the per-tile clone & landmask maps
 3. **inspect_partition** *(optional)* — validate inputs + tile summary + partition image (runnable standalone on a partition NPZ or a directory of clone/landmask maps)
 4. **create_ini** — instantiate a concrete `.ini` from a template
-5. **run_model** — launch PCR-GLOBWB (parallel/tiled or serial)
-6. **plot_output** *(optional, final)* — plot a model output variable (map / animation / time series)
+5. **run_model** — launch PCR-GLOBWB (parallel/tiled or serial); tees the model output to `output/model_run.log`
+6. **diagnostics** — parse `output/model_run.log` for errors / early termination (catches *silent* model crashes)
+7. **plot_output** *(optional, final)* — plot a model output variable (map / animation / time series)
 
 Each step is a Fire-CLI under `src/stages/`. The decomposition and INI logic lives in `src/utils/` as plain
 functions; the stages and the root CLI tools both call those functions, so there is **one implementation**
@@ -25,35 +26,63 @@ run_project.py  ──mlflow.projects.run──▶  src/stages/run.py  (orchestr
                                               ├─ inspect_partition.py→ src.utils.partition_summary.inspect_partition
                                               ├─ create_ini.py       → src.utils.ini_config.create_ini_config  (→ output-path)
                                               ├─ run_model.py        → subprocess: model/parallel_pcrglobwb_runner*.py
-                                              │                                    | model/deterministic_runner.py
+                                              │                        | model/deterministic_runner.py  (tee → output/model_run.log)
+                                              ├─ diagnostics.py      → src.utils.error_log.diagnose  (reads output/model_run.log)
                                               └─ plot_output.py      → src.utils.plot_output.plot_output
 ```
 
 The orchestrator opens **one parent ("orchestrator") run** and runs **one child run per stage** (so each
-stage's parameters are auto-logged and a non-zero exit aborts the pipeline). The pipeline YAML is logged as an
-artifact of the parent run. `skip: true` on a stage makes it optional (used for `compute_basins`).
+stage's parameters are auto-logged and a non-zero exit aborts the pipeline). The pipeline YAML — both the raw
+placeholder version and the fully-substituted one actually used — is always logged as an artifact of the
+parent run. `skip: true` on a stage makes it optional (used for `compute_basins`).
+
+### Diagnostics, the convenience logfile, and artifact logging
+
+- **Why a convenience logfile?** The LSF `errfile` only exists once the job *ends*, so it can't feed an
+  in-pipeline check. Instead `run_model` *tees* the model's combined stdout+stderr to
+  `{{$PCRG_RUN_DIR}}/output/model_run.log` (still streaming to the LSF log too). In parallel mode the runner
+  backgrounds every per-tile/merging process under a bare `wait`, so a fatal crash inside a subprocess never
+  changes the job's exit code — `run_model` "succeeds" even when the model died. The **`diagnostics`** stage
+  reads `model_run.log`, de-duplicates errors/warnings, and reports a termination **verdict** (e.g. a crash in
+  the merging/global process, or a run that stopped well before its configured number of steps). It writes
+  `reports/diagnostics_summary.txt`, `reports/diagnostics.csv`, and `reports/diagnostics_metrics.json`, runs
+  non-fatally by default, and is resilient to a missing/empty log. Set `diagnostics.fail-on-error: true` to
+  make a fatal model error fail the pipeline. The same logic is available standalone via the root
+  `parse_errlog.py` shim (e.g. on an LSF `errfile` after the fact).
+- **Artifact logging (additive, allowlist-driven).** Every YAML key is always forwarded to its stage as a real
+  CLI argument. *In addition*, after a stage runs the orchestrator archives any parameter whose **name** is in
+  an allowlist (`config`, `config-path`, `summary-path`, `output-summary`, `metrics-path`, `output-path`, …) as
+  an MLflow artifact on the parent run — by default only for the small text extensions
+  (`.ini .yaml .yml .json .txt .csv`), or for any extension when `log_artifacts: true`. `metrics-path` is also
+  read as flat `{name: number}` JSON and logged as MLflow metrics. The allowlist is documented at the top of
+  the pipeline YAML. This is how the generated INI, partition summary, and diagnostics outputs get archived.
+- **The merging clone.** In parallel mode the merging/global process needs a whole-domain clone; by default it
+  uses the routing `lddMap` (the same map the official MODFLOW merging config uses). Override it explicitly
+  with the `GLOBAL_CLONE_MAP` env var (`--env GLOBAL_CLONE_MAP=...`) or a `globalCloneMap` line in the base INI.
 
 ## Files
 
 | Path | Role |
 |------|------|
 | `run_project.py` | Entrypoint: opens the MLflow experiment, launches the orchestrator |
-| `src/stages/run.py` | Sequential orchestrator (`execute_stage` + the `skip` control key) |
+| `src/stages/run.py` | Sequential orchestrator (`execute_stage`, the `skip` control key, the artifact-name allowlist + always-archived resolved YAML) |
 | `src/stages/setup.py` | Stage 1 — make output/working dirs |
 | `src/stages/compute_basins.py` | Stage 2 — Fire wrapper over the two `src/utils` functions (optional) |
 | `src/stages/inspect_partition.py` | Stage 3 *(optional)* — validate + tile summary + partition image (also standalone) |
 | `src/stages/create_ini.py` | Stage 4 — Fire wrapper over `create_ini_config` (writes a deterministic `.ini`) |
-| `src/stages/run_model.py` | Stage 5 — launch the model (parallel/serial, configurable) |
-| `src/stages/plot_output.py` | Stage 6 *(optional, final)* — plot a model output variable |
+| `src/stages/run_model.py` | Stage 5 — launch the model (parallel/serial, configurable); tees output to `log-file` |
+| `src/stages/diagnostics.py` | Stage 6 — Fire wrapper over `src.utils.error_log.diagnose` (analyses `model_run.log`) |
+| `src/stages/plot_output.py` | Stage 7 *(optional, final)* — plot a model output variable |
 | `src/utils/ldd_basins.py` | LDD decomposition implementation (`compute_ldd_basins`) |
 | `src/utils/tile_clone_maps.py` | Per-tile clone/landmask implementation (`create_tile_clone_maps`) |
 | `src/utils/ini_config.py` | INI templating implementation (`create_ini_config`) |
 | `src/utils/partition_summary.py` | Validate + tile summary + partition image (`inspect_partition`: NPZ / extents / maps dir) |
 | `src/utils/plot_output.py` | netCDF output plotter (`plot_output`) |
 | `src/utils/plotting.py` | **Shared** matplotlib helpers (used by both plotting stages) |
+| `src/utils/error_log.py` | Run-log parser + termination diagnosis (`diagnose`); shared by the stage and the CLI shim |
 | `src/utils/io/parse_config.py` | YAML loader with `{{$ENV_VAR}}` expansion |
-| `src/utils/shell.py` | `run_command` / `python_tool` (used by the `run_model` stage) |
-| `compute_ldd_basins.py`, `create_tile_clone_maps.py`, `create_ini_config.py`, `inspect_partition.py`, `plot_simulation_output.py` | Root **argparse CLI shims** over the `src/utils` functions |
+| `src/utils/shell.py` | `run_command` (incl. the `log_file` tee) / `python_tool` (used by the `run_model` stage) |
+| `compute_ldd_basins.py`, `create_tile_clone_maps.py`, `create_ini_config.py`, `inspect_partition.py`, `parse_errlog.py`, `plot_simulation_output.py` | Root **argparse CLI shims** over the `src/utils` functions |
 | `plot_simulation_output_notebook.py` | Self-contained Jupyter `quicklook()` helper (numpy/netCDF4/matplotlib only) |
 | `create_job_file.py` | Unified LSF generator: `deterministic` / `parallel` / `pipeline` modes |
 | `create_batch_job_file.py`, `create_parallel_batch_job_file.py` | Deprecation shims → `create_job_file.py` |
@@ -141,7 +170,8 @@ python create_job_file.py parallel      --nc 54 --mem 128G ... --config <ini> --
 ```
 
 **Locally (smoke test, no model):** point the env vars at scratch dirs, set `compute_basins.skip: true`,
-`create_ini.novalidation: true`, and `run_model.skip: true`:
+`create_ini.novalidation: true`, and `run_model.skip: true` (the `diagnostics` stage then finds no
+`model_run.log` and writes an empty, harmless report — or set `diagnostics.skip: true` to skip it too):
 
 ```bash
 export PCRG_RUN_DIR=/tmp/pcrg_run PCRG_INPUT_DIR=/tmp/pcrg_inputs

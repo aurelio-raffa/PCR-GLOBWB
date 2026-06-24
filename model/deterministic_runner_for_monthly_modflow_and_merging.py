@@ -53,6 +53,51 @@ logger = logging.getLogger(__name__)
 import disclaimer
 
 
+def resolve_global_clone_map(configuration):
+    """Return a valid whole-domain clone map for the merging ("global") process.
+
+    The parallel runner shares ONE ini across every spawned process. Per-tile workers substitute their
+    clone code into ``cloneMap``'s ``%s`` (see deterministic_runner_glue_with_parallel_and_modflow_
+    options.py), but the merging/global process is launched *without* a clone code, so its ``cloneMap``
+    still holds the literal template (e.g. ``.../clone_%s.map``). That is not a real PCRaster map, so
+    ``pcr.setclone`` raises ``TypeError: Cannot open '.../clone_%s.map'`` and the merging process dies --
+    after which the per-tile processes deadlock at the monthly merge barrier and the job is eventually
+    killed. (The bare ``wait`` in the parallel runner means none of this changes the job's exit code.)
+
+    To avoid that, when ``cloneMap`` is still a per-tile template we resolve a whole-domain clone, in
+    priority order:
+      1. the ``GLOBAL_CLONE_MAP`` environment variable (explicit override; e.g. set via the job's
+         ``--env``),
+      2. a ``globalCloneMap`` key under ``[globalOptions]`` of the ini (explicit override),
+      3. the routing ``lddMap`` -- a global map at the run resolution that always exists. This is exactly
+         the choice the official MODFLOW merging config makes (``[globalMergingAndModflowOptions]``
+         ``cloneMap = .../lddsound_05min.map``, ``landmask = None``).
+
+    A ``cloneMap`` that is already concrete (no ``%s``) is returned unchanged.
+    """
+    clone = configuration.cloneMap
+    if "%s" not in str(clone):
+        return clone
+
+    input_dir = configuration.globalOptions['inputDir']
+
+    env_override = os.environ.get('GLOBAL_CLONE_MAP', '').strip()
+    if env_override:
+        logger.info("Merging process: using the GLOBAL_CLONE_MAP override as the clone map: %s", env_override)
+        return vos.getFullPath(env_override, input_dir)
+
+    ini_override = str(configuration.globalOptions.get('globalCloneMap', '')).strip()
+    if ini_override and ini_override.lower() != 'none' and "%s" not in ini_override:
+        logger.info("Merging process: using [globalOptions] globalCloneMap as the clone map: %s", ini_override)
+        return vos.getFullPath(ini_override, input_dir)
+
+    ldd_map = vos.getFullPath(configuration.routingOptions['lddMap'], input_dir)
+    logger.warning("Merging process: cloneMap is a per-tile template (%s) with no clone code to "
+                   "substitute; falling back to the routing lddMap as the whole-domain clone: %s",
+                   clone, ldd_map)
+    return ldd_map
+
+
 class DeterministicRunner(DynamicModel):
 
     def __init__(self, configuration, modelTime):
@@ -115,8 +160,10 @@ class DeterministicRunner(DynamicModel):
             self.model = ModflowCoupling(configuration, modelTime)
             self.reporting = Reporting(configuration, self.model, modelTime)
         else:
-            # somehow you need to set the clone map (as the dynamic framework needs it and the "self.model" is not made) 
-            pcr.setclone(configuration.cloneMap)
+            # somehow you need to set the clone map (as the dynamic framework needs it and the "self.model" is not made)
+            # NOTE: this is the merging/global process. Its cloneMap is the per-tile template (no clone code
+            # was substituted), so resolve a valid whole-domain clone instead of the literal '...clone_%s.map'.
+            pcr.setclone(resolve_global_clone_map(configuration))
 
     def initial(self):
 
