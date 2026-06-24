@@ -29,8 +29,14 @@ def create_ini(
         title: str = '',
         description: str = '',
         novalidation: bool = False,
+        global_clone_map: str = 'None',
 ) -> None:
-    """Render ``base_ini`` into a concrete INI at ``output_path`` (see src/utils/ini_config.create_ini_config)."""
+    """Render ``base_ini`` into a concrete INI at ``output_path`` (see src/utils/ini_config.create_ini_config).
+
+    ``global_clone_map`` is the whole-domain clone for the merging/global process in a parallel run; an
+    empty value (e.g. an unset ``{{$GLOBAL_CLONE_MAP}}`` placeholder) is normalised to ``'None'``, in which
+    case the merging runner falls back to the routing ``lddMap``.
+    """
     path = create_ini_config(
         name=name,
         base_ini=base_ini,
@@ -46,6 +52,7 @@ def create_ini(
         title=title,
         description=description,
         novalidation=bool(novalidation),
+        globalCloneMap=str(global_clone_map) or 'None',
         output_path=output_path,
     )
     print(f'create_ini: rendered INI -> {path}')

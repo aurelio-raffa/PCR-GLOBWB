@@ -13,6 +13,7 @@ Configurable launch path (chosen with ``mode``):
 (shell-split) appended verbatim -- use it for the ``with_arguments`` runner's overrides (``-sd``, ``-ed``,
 ``-mod``, clone codes, ...) or for ``deterministic_runner``'s ``--output_dir`` override.
 """
+import os
 import shlex
 
 from fire import Fire
@@ -33,6 +34,7 @@ def run_model(
         debug_option: str = 'parallel',
         serial_debug: bool = False,
         extra_args: str = '',
+        log_file: str = '',
 ) -> None:
     """Launch PCR-GLOBWB with the rendered ``config`` INI.
 
@@ -44,6 +46,11 @@ def run_model(
             ``parallel``; the runners also accept ``debug_parallel``).
         serial_debug: In ``serial`` mode, append the ``debug`` positional flag.
         extra_args: Extra CLI arguments appended verbatim (shell-split).
+        log_file: If set, tee the model's combined stdout+stderr to this convenience logfile (inside the
+            run output dir) while still streaming to the LSF job log. The ``diagnostics`` stage reads it.
+            In parallel mode the runner backgrounds every per-tile/merging process with inherited fds, so
+            this single tee captures the full model output (including a merging-process crash that the
+            job's exit code would otherwise hide).
     """
     tail = shlex.split(extra_args) if extra_args else []
 
@@ -57,7 +64,10 @@ def run_model(
     else:
         raise ValueError(f"run_model: unknown mode '{mode}' (expected 'parallel' or 'serial')")
 
-    run_command(cmd, cwd=root_path)
+    if log_file:
+        os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
+
+    run_command(cmd, cwd=root_path, log_file=log_file or None)
 
 
 if __name__ == '__main__':

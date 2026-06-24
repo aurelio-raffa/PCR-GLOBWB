@@ -4,6 +4,16 @@
 # ignore LSF job files
 *.lsf
 
+# ignore LSF job logs (stdout/stderr written by `#BSUB -o/-e` on job end). These hold real cluster
+# paths/usernames/hostnames and must never be committed -- see CLAUDE.md "Sensitive information policy".
+errfile.*
+logfile.*
+*.err
+
+# ignore IDE workspace files (contain absolute local paths -- see CLAUDE.md sensitive-info policy)
+.idea/
+.vscode/
+
 # ignore pcraster maps
 *.map
 *.ldd
