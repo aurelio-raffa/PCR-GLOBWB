@@ -60,6 +60,19 @@ TIMESTEP_RE = re.compile(r"number of time steps:\s*(\d+)")
 MODEL_DATE_RE = re.compile(r"for time (\d{4}-\d{2}-\d{2})")
 # The last frame of a Python traceback is the exception, e.g. "TypeError: Cannot open '...'".
 PY_FILE_FRAME_RE = re.compile(r'File "([^"]+)", line (\d+)')
+# Explicit fatal markers logged by the parallel launcher / supervisor / merger when the run is torn
+# down WITHOUT a Python traceback: a clone wedges -> the merger logs "appears wedged" and sys.exit(1)s,
+# the supervisor SIGKILLs the rest, the launcher logs the failure and exits. These are clean exits, so
+# the traceback/CRITICAL heuristic below would otherwise miss a hard, run-ending failure. Each substring
+# below appears at ERROR level in the model logfile that diagnostics parses.
+FATAL_MARKER_RE = re.compile(
+    r"(A PCR-GLOBWB clone or the merging process failed"
+    r"|a clone appears wedged"
+    r"|Aborting merging"
+    r"|SYSTEMIC sentinel problem"
+    r"|Parallel supervisor: process .* exited with code"
+    r"|Timed out after .* aborting clone)"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +226,7 @@ def analyze_run(records: list[dict]) -> dict:
     counts_by_level: dict[str, int] = defaultdict(int)
     timestamps: list[datetime] = []
     tracebacks: list[dict] = []
+    fatal_markers: list[str] = []
     expected_timesteps = None
     last_model_date = None
 
@@ -225,6 +239,12 @@ def analyze_run(records: list[dict]) -> dict:
         content = r["content"]
         if TRACEBACK_START in content:
             tracebacks.append(r)
+
+        marker = FATAL_MARKER_RE.search(content)
+        if marker:
+            # keep the marker's own log line (first non-empty line) for a readable verdict
+            line = next((ln.strip() for ln in content.splitlines() if ln.strip()), marker.group(0))
+            fatal_markers.append(line)
 
         m = TIMESTEP_RE.search(content)
         if m:
@@ -245,15 +265,18 @@ def analyze_run(records: list[dict]) -> dict:
     merging_crashed = bool(merging_tracebacks)
     n_critical = counts_by_level.get("CRITICAL", 0)
     n_error = counts_by_level.get("ERROR", 0)
-    # A traceback is emitted as an ERROR record, so ``n_error`` already includes it; "fatal" here means
-    # any traceback or CRITICAL line was seen.
-    has_fatal = has_traceback or n_critical > 0
+    # A traceback is emitted as an ERROR record, so ``n_error`` already includes it. "Fatal" means any
+    # traceback or CRITICAL line, OR an explicit launcher/supervisor/merger abort marker (a hard failure
+    # that exits cleanly, hence carries no traceback -- e.g. a wedged clone aborting the merger).
+    has_fatal = has_traceback or n_critical > 0 or bool(fatal_markers)
 
     if merging_crashed:
         verdict = ("merging/global process crashed -- the parallel run cannot complete (per-tile "
                    "processes deadlock at the monthly merge barrier). Likely the merging clone map.")
     elif first_traceback is not None:
         verdict = f"fatal error: {earliest_exception or 'a traceback was logged'}"
+    elif fatal_markers:
+        verdict = f"run aborted: {fatal_markers[0]}"
     elif n_critical > 0:
         verdict = "CRITICAL message(s) logged -- inspect the summary"
     elif not records:
@@ -268,6 +291,7 @@ def analyze_run(records: list[dict]) -> dict:
         "n_warning": counts_by_level.get("WARNING", 0),
         "n_info": counts_by_level.get("INFO", 0),
         "n_tracebacks": len(tracebacks),
+        "n_fatal_markers": len(fatal_markers),
         "merging_crashed": merging_crashed,
         "has_traceback": has_traceback,
         "has_fatal_error": has_fatal,
@@ -320,7 +344,7 @@ def write_metrics(analysis: dict, path: Path) -> None:
         key: num(analysis[key])
         for key in (
             "n_log_entries", "n_critical", "n_error", "n_warning", "n_info", "n_tracebacks",
-            "merging_crashed", "has_traceback", "has_fatal_error", "expected_timesteps",
+            "n_fatal_markers", "merging_crashed", "has_traceback", "has_fatal_error", "expected_timesteps",
         )
     }
     with path.open("w", encoding="utf-8") as f:

@@ -81,17 +81,23 @@ stages:
         debug-option: 'parallel'                             # runner's 2nd positional arg (parallel mode)
         extra-args:   ''                                     # shell-split, appended verbatim
         log-file:     '{{$PCRG_RUN_DIR}}/output/model_run.log'   # tee model stdout+stderr here for the diagnostics stage
+        continue-on-error: true                              # a model crash does NOT abort here: flow into diagnostics
+                                                             #   first (which writes its outputs), then fail at the end.
 
-    # 5) diagnose the run from the model's convenience logfile. Catches SILENT failures: the parallel runner
-    #    backgrounds every process and ends with a bare `wait`, so a fatal crash inside a subprocess never
-    #    changes the job's exit code. Runs automatically; set fail-on-error:true to fail the pipeline on a
-    #    fatal model error. Standalone: `python diagnostics.py --log-file run.log --summary-path s.txt`.
+    # 5) diagnose the run from the model's convenience logfile. Catches SILENT failures (the parallel runner
+    #    backgrounds every process, so a crash inside a subprocess need not change the job's exit code) AND
+    #    LOUD ones (run_model above is continue-on-error, so a crashed model still reaches this stage). This
+    #    stage always writes its summary/CSV/metrics to disk first; with fail-on-error:true it then reports
+    #    failure when the log shows a fatal error, and being continue-on-error that failure is deferred so its
+    #    artifacts are still logged before the pipeline is failed at the end of the run.
+    #    Standalone: `python diagnostics.py --log-file run.log --summary-path s.txt`.
     - diagnostics:
         log-file:      '{{$PCRG_RUN_DIR}}/output/model_run.log'             # input: the logfile run_model teed
         summary-path:  '{{$PCRG_RUN_DIR}}/reports/diagnostics_summary.txt'  # -> MLflow artifact (.txt)
         csv-path:      '{{$PCRG_RUN_DIR}}/reports/diagnostics.csv'          # -> MLflow artifact (.csv)
         metrics-path:  '{{$PCRG_RUN_DIR}}/reports/diagnostics_metrics.json' # -> MLflow artifact (.json) + logged as metrics
-        fail-on-error: false                                 # true -> a fatal model error fails the pipeline
+        fail-on-error: true                                  # true -> a fatal model error fails the pipeline
+        continue-on-error: true                              # ...but only after this stage's outputs are written/logged
 
     # 6) OPTIONAL FINAL STAGE: plot a model output variable (map / animation / time series). Skipped by
     #    default — set skip:false and point nc-path/variable at a file the run actually produced.

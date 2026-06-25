@@ -128,6 +128,15 @@ class DeterministicRunner(DynamicModel):
         if 'wait_timeout_minutes' in self.configuration.globalOptions.keys():
             self.wait_timeout_seconds = int(self.configuration.globalOptions['wait_timeout_minutes']) * 60
 
+        # how often (seconds) to emit a progress heartbeat while blocked on the per-clone
+        # month-end sentinels. The merger is the ONLY process that knows which clone's
+        # sentinel is missing, so this names the laggard(s) in real time instead of only at
+        # the final wait_timeout abort -- a wedge is then visible in the log within minutes.
+        # Overridable via globalOptions (wait_progress_report_minutes). Default: every 15 min.
+        self.progress_report_seconds = 15 * 60
+        if 'wait_progress_report_minutes' in self.configuration.globalOptions.keys():
+            self.progress_report_seconds = int(self.configuration.globalOptions['wait_progress_report_minutes']) * 60
+
         # indicating whether this run includes modflow or merging processes
         # - Only the "Global" and "part_one" runs include modflow or merging processes 
         self.include_merging_or_modflow = True
@@ -202,19 +211,29 @@ class DeterministicRunner(DynamicModel):
             pcrglobwb_is_ready = False
             self.count_check = 0
             wait_start = datetime.datetime.now()
+            last_progress_report = wait_start
             while pcrglobwb_is_ready == False:
                 # poll with a real sleep instead of CPU-spinning at fixed clock seconds
                 pcrglobwb_is_ready = self.check_pcrglobwb_status()
                 if pcrglobwb_is_ready == False:
-                    waited = (datetime.datetime.now() - wait_start).total_seconds()
+                    now = datetime.datetime.now()
+                    waited = (now - wait_start).total_seconds()
+                    # periodic heartbeat: name the clone(s) we are still blocked on so a
+                    # wedge is visible in the log in real time, not only at the final abort.
+                    if (now - last_progress_report).total_seconds() >= self.progress_report_seconds:
+                        self.report_clones_still_pending(waited, level=logging.WARNING)
+                        last_progress_report = now
                     if waited > self.wait_timeout_seconds:
                         # No exit code to observe: a clone is wedged ALIVE (it never wrote
                         # its sentinel and never crashed, or the launcher supervisor would
-                        # already have caught it). Fail fast so the supervisor tears the run
-                        # down instead of the job hanging to its scheduler wall-clock limit.
+                        # already have caught it). Name the culprit clone(s) -- the merger is
+                        # the only process that knows which sentinel is missing -- then fail
+                        # fast so the supervisor tears the run down instead of the job hanging
+                        # to its scheduler wall-clock limit.
                         logger.error("Timed out after %.0f min waiting for per-clone month-end "
                                      "files for %s; a clone appears wedged. Aborting merging.",
                                      waited / 60.0, str(self.modelTime.fulldate))
+                        self.report_clones_still_pending(waited, level=logging.ERROR, detailed=True)
                         sys.exit(1)
                     time.sleep(self.barrier_poll_seconds)
 
@@ -327,16 +346,27 @@ class DeterministicRunner(DynamicModel):
 
             vos.cmd_line(cmd, using_subprocess=False)
 
-    def check_pcrglobwb_status(self):
+    def _clone_areas(self):
+        """The clone codes whose month-end sentinels this merger waits for.
 
+        Mirrors the clone selection in parallel_pcrglobwb_runner.py so the merger waits for
+        exactly the clones that were launched.
+        """
         if self.configuration.globalOptions['cloneAreas'] == "Global" or \
                 self.configuration.globalOptions['cloneAreas'] == "part_one":
-            clone_areas = ['M%02d' % i for i in range(1, 53 + 1, 1)]
-        else:
-            clone_areas = list(set(self.configuration.globalOptions['cloneAreas'].split(",")))
+            return ['M%02d' % i for i in range(1, 53 + 1, 1)]
+        return list(set(self.configuration.globalOptions['cloneAreas'].split(",")))
+
+    def _clone_sentinel_path(self, clone_area, fulldate):
+        return str(self.configuration.main_output_directory) + "/" + str(clone_area) + \
+            "/maps/pcrglobwb_files_for_" + str(fulldate) + "_are_ready.txt"
+
+    def check_pcrglobwb_status(self):
+
+        clone_areas = self._clone_areas()
+        status = len(clone_areas) == 0
         for clone_area in clone_areas:
-            status_file = str(self.configuration.main_output_directory) + "/" + str(
-                clone_area) + "/maps/pcrglobwb_files_for_" + str(self.modelTime.fulldate) + "_are_ready.txt"
+            status_file = self._clone_sentinel_path(clone_area, self.modelTime.fulldate)
             msg = 'Waiting for the file: ' + status_file
             if self.count_check == 1: logger.info(msg)
             if self.count_check < 7:
@@ -346,9 +376,96 @@ class DeterministicRunner(DynamicModel):
             if status == False: return status
             if status: self.count_check = 0
 
-        print(status)
-
         return status
+
+    def _missing_clone_sentinels(self, fulldate):
+        """Full list of clone codes whose <fulldate> month-end sentinel is NOT yet on disk.
+
+        check_pcrglobwb_status short-circuits on the first missing clone (a cheap poll); this
+        enumerates ALL of them so the timeout diagnostic can name every laggard.
+        """
+        return [clone_area for clone_area in self._clone_areas()
+                if not os.path.exists(self._clone_sentinel_path(clone_area, fulldate))]
+
+    def _resolve_clone_paths(self, clone_area):
+        """Best-effort (cloneMap, landmask) paths the given clone is responsible for.
+
+        The merger holds the UNSUBSTITUTED per-tile template (e.g. '.../clone_%s.map'); fill
+        in the clone code so the operator can inspect that tile's geometry/size to see whether
+        a degenerate/oversized partition is behind the stall.
+        """
+        def _sub(template):
+            try:
+                if template is not None and "%" in str(template):
+                    return str(template) % clone_area
+            except (TypeError, ValueError):
+                pass
+            return str(template)
+        return (_sub(self.configuration.globalOptions.get('cloneMap')),
+                _sub(self.configuration.globalOptions.get('landmask')))
+
+    def _latest_clone_activity(self, clone_area):
+        """Where a (possibly wedged) clone got to: the latest month-end it completed and the
+        most recent write under its output dir (a proxy for "last sign of life")."""
+        clone_dir = str(self.configuration.main_output_directory) + "/" + str(clone_area)
+        # latest completed month (sentinels are written only at month end, in pcrglobwb.py)
+        sentinels = glob.glob(clone_dir + "/maps/pcrglobwb_files_for_*_are_ready.txt")
+        if sentinels:
+            latest = max(sentinels, key=os.path.getmtime)
+            done = os.path.basename(latest).replace("pcrglobwb_files_for_", "").replace("_are_ready.txt", "")
+            last_done = "last completed month-end " + done
+        else:
+            last_done = "NO month-end completed (stalled within the first simulated month)"
+        # freshest file mtime anywhere under the clone dir = last write activity
+        last_seen = "unknown"
+        newest_mtime = None
+        try:
+            for root, _dirs, files in os.walk(clone_dir):
+                for f in files:
+                    try:
+                        m = os.path.getmtime(os.path.join(root, f))
+                    except OSError:
+                        continue
+                    if newest_mtime is None or m > newest_mtime:
+                        newest_mtime = m
+        except OSError:
+            pass
+        if newest_mtime is not None:
+            last_seen = datetime.datetime.fromtimestamp(newest_mtime).isoformat()
+        return "%s; last output write: %s; per-clone log dir: %s/log/" % (last_done, last_seen, clone_dir)
+
+    def report_clones_still_pending(self, waited_seconds, level=logging.WARNING, detailed=False):
+        """Log which clone(s) the merger is still blocked on (and, when ``detailed``, how far
+        each got and which clone map it owns). This is the only place in the system that knows
+        the IDENTITY of a wedged clone, since the merger consumes every clone's month-end
+        sentinel. Called periodically (heartbeat) and once more at the final timeout."""
+        fulldate = self.modelTime.fulldate
+        missing = self._missing_clone_sentinels(fulldate)
+        if not missing:
+            return
+        total = len(self._clone_areas())
+        logger.log(level,
+                   "Merging still blocked after %.0f min: waiting on %d of %d clone(s) for "
+                   "month-end %s -> %s",
+                   waited_seconds / 60.0, len(missing), total, str(fulldate), ",".join(missing))
+        # ALL clones missing is qualitatively different from one wedged tile: it means the sentinel
+        # mechanism itself is not running. Point at the usual cause so it is diagnosed in seconds.
+        if total > 1 and len(missing) == total:
+            logger.log(level,
+                       "ALL %d clones are missing the month-end sentinel for %s -- this is a "
+                       "SYSTEMIC sentinel problem, not a single wedged tile: no clone is writing "
+                       "pcrglobwb_files_for_<date>_are_ready.txt. Check that the per-clone runner "
+                       "builds PCRGlobWB with spinUpRun=False for the transient run (the sentinel "
+                       "in pcrglobwb.py is written only when 'spinUpRun is not None and == False'), "
+                       "and that clones use the layout the merger checks: %s/<clone>/maps/.",
+                       total, str(fulldate), str(self.configuration.main_output_directory))
+        if not detailed:
+            return
+        for clone_area in missing:
+            clone_map, landmask = self._resolve_clone_paths(clone_area)
+            logger.log(level,
+                       "  wedged-candidate clone %s | cloneMap=%s | landmask=%s | %s",
+                       clone_area, clone_map, landmask, self._latest_clone_activity(clone_area))
 
 
 def main():

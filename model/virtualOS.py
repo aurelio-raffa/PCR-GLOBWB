@@ -2842,7 +2842,7 @@ def cmd_line(command_line,using_subprocess = True):
     else:
         os.system(co)
 
-def run_parallel_and_supervise(commands, poll_seconds = 2, grace_seconds = 10):
+def run_parallel_and_supervise(commands, poll_seconds = 2, grace_seconds = 10, labels = None):
     '''Launch each command (a list of argv) as a background subprocess and supervise them.
 
     Behaviour:
@@ -2854,6 +2854,12 @@ def run_parallel_and_supervise(commands, poll_seconds = 2, grace_seconds = 10):
         a grace period) and that non-zero code is returned;
       * if all children exit 0, 0 is returned.
 
+    `labels`: optional list parallel to `commands` of human-readable names (e.g. "clone M37",
+    "merging process"). On a non-zero exit the supervisor logs WHICH labelled process failed,
+    so the operator sees the culprit immediately instead of only a bare exit code. Defaults to
+    the joined argv. The return value is unchanged (the exit code), so callers that only test
+    `!= 0` keep working.
+
     This replaces the previous "cmd1 & cmd2 & ... & wait" shell string, whose bare `wait`
     always returned 0 (masking crashes) and could not react to a sibling that had wedged
     (e.g. the merging process hung waiting on a crashed clone's sentinel file). Reacting to
@@ -2862,6 +2868,9 @@ def run_parallel_and_supervise(commands, poll_seconds = 2, grace_seconds = 10):
     '''
     import signal
     import time as _time
+
+    if labels is None:
+        labels = [" ".join(str(a) for a in c) for c in commands]
 
     procs = [subprocess.Popen(c, start_new_session = True) for c in commands]
 
@@ -2874,21 +2883,29 @@ def run_parallel_and_supervise(commands, poll_seconds = 2, grace_seconds = 10):
                     pass
 
     failed_code = 0
+    failed_index = None
     try:
         while True:
             running = 0
-            for p in procs:
+            for idx, p in enumerate(procs):
                 ret = p.poll()
                 if ret is None:
                     running += 1
                 elif ret != 0:
                     failed_code = ret
+                    failed_index = idx
                     break
             if failed_code != 0 or running == 0:
                 break
             _time.sleep(poll_seconds)
     finally:
         if failed_code != 0:
+            still_running = sum(1 for p in procs if p.poll() is None)
+            logger.error("Parallel supervisor: process [%s] (pid %s, argv: %s) exited with "
+                         "code %s; terminating the %d still-running process(es).",
+                         labels[failed_index], procs[failed_index].pid,
+                         " ".join(str(a) for a in commands[failed_index]),
+                         failed_code, still_running)
             _signal_survivors(signal.SIGTERM)
             _time.sleep(grace_seconds)
             _signal_survivors(signal.SIGKILL)

@@ -8,10 +8,14 @@ and a failing stage (non-zero exit) aborts the pipeline.
 This is the lean, mlflow-only port of plumber's orchestrator: the optional lazy/determinism cache, the Prefect
 backend, the deterministic seeding and the welcome banner have all been dropped. What remains is the dual idea
 that makes the harness useful here -- a tracked parent run plus per-stage child runs -- with a few logging
-conveniences (artifacts/metrics) and one control key, ``skip``, used to make the LDD-basins stage optional.
+conveniences (artifacts/metrics) and two control keys (``skip`` and ``continue-on-error``).
 
 Per-stage YAML keys and how the orchestrator treats them:
-  * ``skip: true`` -- the one control key: skip the stage entirely (it never reaches the stage CLI).
+  * ``skip: true`` -- control key: skip the stage entirely (it never reaches the stage CLI).
+  * ``continue-on-error: true`` -- control key: a non-zero exit from this stage does NOT abort the pipeline
+    immediately. The failure is recorded and the pipeline is failed only AFTER every remaining stage has run.
+    This lets a crashed ``run_model`` still flow into the ``diagnostics`` stage (which writes + logs its
+    outputs) before the pipeline is failed. Like ``skip``, this key never reaches the stage CLI.
   * Every other key is ALWAYS forwarded verbatim to the stage's Fire CLI as ``--<key> <value>``. The
     orchestrator never renames, drops, or hides a parameter from its stage -- so each stage in the YAML
     reads exactly as the CLI invocation it becomes.
@@ -72,13 +76,41 @@ def _coerce_bool(value, default: bool = False) -> bool:
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
-def _log_metrics_to_run(client, run_id: str, metrics_path: str) -> dict:
-    """Read a stage's flat metrics JSON and log each scalar to the given run; return the metrics dict."""
-    with open(metrics_path) as handle:
-        metrics = json.load(handle)
-    for key, value in metrics.items():
-        client.log_metric(run_id=run_id, key=key, value=value)
-    return metrics
+def _log_stage_artifacts(client, ctx: 'PipelineContext', parameters: dict, stage_run_id) -> None:
+    """Archive a stage's allowlisted-name file params on the parent run, and log its ``metrics-path``
+    JSON as MLflow metrics (on the stage run, when known, and the parent).
+
+    Side-effect only and deliberately NON-RAISING: it is called both after a successful stage and,
+    best-effort, after a failed ``continue-on-error`` stage, so whatever outputs the stage managed to
+    write (e.g. the diagnostics summary/CSV/metrics) are still captured even when the stage exited
+    non-zero. ``stage_run_id`` is None when the stage run id is unknown (a failed stage).
+    """
+    already_logged: set = set()
+    for key, value in parameters.items():
+        if _normalize_param_name(key) not in ARTIFACT_PARAM_NAMES:
+            continue
+        path = str(value)
+        if not os.path.isfile(path) or path in already_logged:
+            continue
+        extension = os.path.splitext(path)[1].lower()
+        if ctx.log_artifacts or extension in ARTIFACT_DEFAULT_EXTENSIONS:
+            try:
+                client.log_artifact(ctx.orchestrator_run_id, path)
+                already_logged.add(path)
+            except Exception as exc:  # logging is a convenience; never let it break the pipeline
+                logger.warning('could not log artifact %s: %s', path, exc)
+
+    metrics_path = parameters.get('metrics-path')
+    if metrics_path and os.path.isfile(metrics_path):
+        try:
+            with open(metrics_path) as handle:
+                metrics = json.load(handle)
+            for key, value in metrics.items():
+                if stage_run_id is not None:
+                    client.log_metric(run_id=stage_run_id, key=key, value=value)
+                client.log_metric(run_id=ctx.orchestrator_run_id, key=key, value=value)
+        except Exception as exc:
+            logger.warning('could not log metrics from %s: %s', metrics_path, exc)
 
 
 def _log_resolved_config(config: dict) -> None:
@@ -104,8 +136,13 @@ class PipelineContext:
     log_artifacts: bool
 
 
-def execute_stage(stage_name: str, parameters: dict, index: int, total: int, ctx: PipelineContext) -> None:
-    """Run (or skip) a single pipeline stage as its own ``mlflow.run`` child process."""
+def execute_stage(stage_name: str, parameters: dict, index: int, total: int, ctx: PipelineContext) -> dict | None:
+    """Run (or skip) a single pipeline stage as its own ``mlflow.run`` child process.
+
+    Returns ``None`` on success or skip. When a stage marked ``continue-on-error: true`` exits non-zero,
+    the failure is NOT raised; instead this returns a ``{'stage', 'error'}`` record so the caller can run
+    the remaining stages and fail the pipeline at the end. Any other stage failure raises as before.
+    """
     client = ctx.tracking_client
     parameters = dict(parameters) if parameters else {}
 
@@ -114,42 +151,42 @@ def execute_stage(stage_name: str, parameters: dict, index: int, total: int, ctx
     if _coerce_bool(parameters.pop('skip', None), False):
         logger.info('skipping stage "%s" (skip: true)', stage_name)
         client.set_tag(run_id=ctx.orchestrator_run_id, key=f'skipped_{stage_name}', value='true')
-        return
+        return None
+
+    # `continue-on-error` is the other orchestrator-only control key (see module docstring); also popped so
+    # it never reaches the stage CLI.
+    continue_on_error = _coerce_bool(parameters.pop('continue-on-error', None), False)
 
     print(file=sys.stderr)
     print(f'==============> Stage {index + 1}/{total}: "{stage_name}" '.ljust(103, '='), file=sys.stderr)
 
     # mlflow.run with no MLproject runs `python <entry_point> --key value ...` in the repo dir; values are
-    # stringified so YAML ints/bools pass through cleanly. EVERY parameter is forwarded (only `skip` was
-    # popped above, as a control key). A non-zero exit raises and aborts the pipeline.
+    # stringified so YAML ints/bools pass through cleanly. EVERY parameter is forwarded (only the control
+    # keys were popped above). A non-zero exit raises ExecutionException.
     cli_parameters = {key: str(value) for key, value in parameters.items()}
-    current_run = mlflow.run(
-        uri='',
-        entry_point=f'{ctx.project_uri}/{stage_name}.py',
-        parameters=cli_parameters,
-        env_manager='local',
-    )
+    try:
+        current_run = mlflow.run(
+            uri='',
+            entry_point=f'{ctx.project_uri}/{stage_name}.py',
+            parameters=cli_parameters,
+            env_manager='local',
+        )
+    except Exception as exc:
+        if not continue_on_error:
+            raise
+        # Deferred failure: record it, tag the parent run, and still capture whatever outputs the stage
+        # wrote (so e.g. a crashed run_model does not stop the pipeline before diagnostics runs).
+        logger.error('stage "%s" FAILED (%s); continuing because continue-on-error is set, so the '
+                     'remaining stages still run. The pipeline will be failed at the end.', stage_name, exc)
+        client.set_tag(run_id=ctx.orchestrator_run_id, key=f'failed_{stage_name}', value='true')
+        _log_stage_artifacts(client, ctx, parameters, stage_run_id=None)
+        return {'stage': stage_name, 'error': str(exc)}
 
-    # --- additive artifact logging: archive allowlisted-name params that point at existing files -----------
-    # Purely metadata; the stage already received these params unchanged. Logged on the parent run so the
-    # orchestrator collects the whole run-defining bundle (generated INI, summaries, metrics, ...).
-    already_logged: set = set()
-    for key, value in parameters.items():
-        if _normalize_param_name(key) not in ARTIFACT_PARAM_NAMES:
-            continue
-        path = str(value)
-        if not os.path.isfile(path) or path in already_logged:
-            continue
-        extension = os.path.splitext(path)[1].lower()
-        if ctx.log_artifacts or extension in ARTIFACT_DEFAULT_EXTENSIONS:
-            client.log_artifact(ctx.orchestrator_run_id, path)
-            already_logged.add(path)
-
-    # --- metrics: `metrics-path` JSON is additionally parsed into MLflow metrics (stage + parent) ----------
-    if 'metrics-path' in parameters and os.path.isfile(parameters['metrics-path']):
-        metrics = _log_metrics_to_run(client, current_run.run_id, parameters['metrics-path'])
-        for key, value in metrics.items():
-            client.log_metric(run_id=ctx.orchestrator_run_id, key=key, value=value)
+    # --- additive artifact + metrics logging (purely metadata; the stage already received these params) ----
+    # Logged on the parent run so the orchestrator collects the whole run-defining bundle (generated INI,
+    # summaries, metrics, ...).
+    _log_stage_artifacts(client, ctx, parameters, stage_run_id=current_run.run_id)
+    return None
 
 
 def run(config_file: str):
@@ -176,9 +213,21 @@ def run(config_file: str):
 
         stages = config['stages']
         total_steps = len(stages)
+        deferred_failures: list = []
         for index, stage in enumerate(stages):
             for stage_name, parameters in stage.items():
-                execute_stage(stage_name, parameters, index, total_steps, ctx)
+                failure = execute_stage(stage_name, parameters, index, total_steps, ctx)
+                if failure is not None:
+                    deferred_failures.append(failure)
+
+        # Fail the pipeline now if any `continue-on-error` stage failed -- but only after every remaining
+        # stage ran (e.g. diagnostics computed and logged its outputs). Raising inside the active run marks
+        # the parent run FAILED and exits non-zero, so the failure still propagates to the caller/scheduler.
+        if deferred_failures:
+            names = ', '.join(f['stage'] for f in deferred_failures)
+            logger.error('Pipeline FAILED: stage(s) [%s] reported failure. The remaining stages still ran '
+                         'and their outputs were written/logged; failing the pipeline now.', names)
+            raise SystemExit(f'pipeline failed: stage(s) [{names}] reported failure')
 
     logger.info('Pipeline complete (%d stage(s)).', total_steps)
 
