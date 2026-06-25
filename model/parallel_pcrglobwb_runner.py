@@ -161,8 +161,10 @@ logger.info('Running transient PCR-GLOBWB with/without MODFLOW ')
 # the same conda/pcraster environment.
 i_clone = 0
 commands = []
+labels = []   # human-readable name per command, so the supervisor can name a failing process
 for clone_code in clone_codes:
    commands.append([sys.executable, "deterministic_runner_glue_with_parallel_and_modflow_options.py", iniFileName, debug_option, clone_code])
+   labels.append("clone " + str(clone_code))
    i_clone += 1
 
 
@@ -173,8 +175,9 @@ for clone_code in clone_codes:
 if with_merging_or_modflow:
 
    logger.info('Also with merging and/or MODFLOW processes ')
-   
+
    commands.append([sys.executable, "deterministic_runner_for_monthly_modflow_and_merging.py", iniFileName, debug_option, "transient"])
+   labels.append("merging process")
 
 
 msg = "Parallel commands: " + str(commands)
@@ -194,8 +197,11 @@ os.environ['PYTHONPATH'] = path_of_this_module + os.pathsep + os.environ.get('PY
 # file that will never appear. A non-zero result propagates as this runner's own exit
 # code; the run_model stage runs it with subprocess.run(check=True), so the pipeline
 # aborts instead of silently reporting success.
-return_status = vos.run_parallel_and_supervise(commands)
+return_status = vos.run_parallel_and_supervise(commands, labels = labels)
 if return_status != 0:
     logger.error("A PCR-GLOBWB clone or the merging process failed (exit code %s); "
-                 "all other processes were terminated.", return_status)
+                 "all other processes were terminated. See the 'Parallel supervisor' line "
+                 "above for the failing process; if it was the merging process, the "
+                 "'wedged-candidate clone' line(s) name the stalled clone(s) and the clone "
+                 "map each owns.", return_status)
     sys.exit(1)

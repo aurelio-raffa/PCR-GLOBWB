@@ -499,10 +499,16 @@ class PCRGlobWB(object):
 
         if self._modelTime.isLastDayOfMonth():
             # make an empty file to indicate that the calculation for this month has done
-            # - this is only needed for runs with merging and modflow processes
-            # - for a spinUpRun, merging will be skipped
-            if self.spinUpRun is not None and self.spinUpRun == False:
+            # - this is the per-clone month-end sentinel the merging/global process waits on
+            #   (deterministic_runner_for_monthly_modflow_and_merging.py); a parallel run cannot
+            #   make progress past a month boundary unless every clone writes it
+            # - it is skipped ONLY for a spin-up run (spinUpRun is True), where there is no merging.
+            #   We deliberately write it for any non-spin-up run -- including when spinUpRun is left
+            #   at its None default -- so that a runner which forgets to pass spinUpRun=False can no
+            #   longer silently disable the sentinel and hang the merger (the bug that wedged the
+            #   parallel pipeline: the sentinel was never written, so the merger timed out on month 1).
+            if self.spinUpRun != True:
                 filename = self._configuration.mapsDir + "/pcrglobwb_files_for_" + str(self._modelTime.fulldate)+"_are_ready.txt"
                 if os.path.exists(filename): os.remove(filename)
-                open(filename, "w").close()    
+                open(filename, "w").close()
 

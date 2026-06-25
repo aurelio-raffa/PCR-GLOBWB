@@ -47,11 +47,18 @@ import disclaimer
 
 class DeterministicRunner(DynamicModel):
 
-    def __init__(self, configuration, modelTime, initialState=None, system_argument=None):
+    def __init__(self, configuration, modelTime, initialState=None, system_argument=None, spinUpRun=False):
         DynamicModel.__init__(self)
 
         self.modelTime = modelTime
-        self.model = PCRGlobWB(configuration, modelTime, initialState)
+        # spinUpRun MUST be forwarded to PCRGlobWB: a transient (spinUpRun=False) run is the only
+        # one that writes the per-month "pcrglobwb_files_for_<date>_are_ready.txt" sentinel that the
+        # merging process waits on (pcrglobwb.py, at isLastDayOfMonth). If it is left as the
+        # PCRGlobWB default of None, the guard `spinUpRun is not None and spinUpRun == False` is
+        # never True, NO clone ever writes the sentinel, and the merging process hangs until its
+        # wait_timeout backstop -- with every clone reported missing. (Matches the proven
+        # deterministic_runner_with_arguments.py, which always passed spinUpRun here.)
+        self.model = PCRGlobWB(configuration, modelTime, initialState, spinUpRun)
         self.reporting = Reporting(configuration, self.model, modelTime)
 
         # the model will set paramaters based on global pre-multipliers given in the argument:
@@ -505,7 +512,7 @@ def main():
                 configuration.globalOptions['startTime'],
                 spinUpRun, noSpinUps)
             logger.info('Spin-Up Run No. ' + str(spinUpRun))
-            deterministic_runner = DeterministicRunner(configuration, currTimeStep, initial_state, sys.argv)
+            deterministic_runner = DeterministicRunner(configuration, currTimeStep, initial_state, sys.argv, spinUpRun=True)
 
             all_state_begin = deterministic_runner.model.getAllState()
 
@@ -527,7 +534,7 @@ def main():
     )
 
     logger.info('Transient simulation run started.')
-    deterministic_runner = DeterministicRunner(configuration, currTimeStep, initial_state, sys.argv)
+    deterministic_runner = DeterministicRunner(configuration, currTimeStep, initial_state, sys.argv, spinUpRun=False)
 
     dynamic_framework = DynamicFramework(deterministic_runner, currTimeStep.nrOfTimeSteps)
     dynamic_framework.setQuiet(True)
