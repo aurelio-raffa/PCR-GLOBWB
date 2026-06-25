@@ -25,6 +25,7 @@
 import os
 import sys
 import datetime
+import time
 
 import pcraster as pcr
 from pcraster.framework import DynamicModel
@@ -61,6 +62,22 @@ class DeterministicRunner(DynamicModel):
         if ('with_merging' in configuration.globalOptions.keys()) and (
                 configuration.globalOptions['with_merging'] == "False"):
             self.with_merging = False
+
+        # polling interval (seconds) for the month-end wait that is used ONLY when this
+        # run is coupled online to MODFLOW. A real time.sleep() replaces the former
+        # CPU-spinning poll loop so a waiting clone does not burn a core on the shared
+        # node. Optionally overridable via globalOptions for future MODFLOW runs.
+        self.barrier_poll_seconds = 10
+        if 'barrier_poll_seconds' in configuration.globalOptions.keys():
+            self.barrier_poll_seconds = int(configuration.globalOptions['barrier_poll_seconds'])
+
+        # hard timeout (seconds) for the MODFLOW/merging waits below; a backstop for an
+        # upstream process that hangs while still alive (no exit code for the launcher
+        # supervisor to catch). Only reached in online-MODFLOW runs. Overridable via
+        # globalOptions (wait_timeout_minutes).
+        self.wait_timeout_seconds = 180 * 60
+        if 'wait_timeout_minutes' in configuration.globalOptions.keys():
+            self.wait_timeout_seconds = int(configuration.globalOptions['wait_timeout_minutes']) * 60
 
         # make the configuration available for the other method/function
         self.configuration = configuration
@@ -346,32 +363,51 @@ class DeterministicRunner(DynamicModel):
         # do any needed reporting for this time step        
         self.reporting.report()
 
-        # at the last day of the month, stop calculation until modflow and related merging process are ready
-        # (only for a run with modflow)
-        if self.modelTime.isLastDayOfMonth() and (
-                self.configuration.online_coupling_between_pcrglobwb_and_modflow or self.with_merging
-        ):
+        # At the last day of the month, a clone only has to PAUSE here when there is a
+        # genuine cross-process data dependency on the global step. That is the case
+        # ONLY for an online MODFLOW coupling: on day 1 of the next month the clone
+        # reads the MODFLOW-computed groundwater fields (relativeGroundwaterHead,
+        # storGroundwater, baseflow) back into its own state -- see
+        # groundwater.update_with_MODFLOW() -- so it must block until MODFLOW and the
+        # related merging for this month are on disk.
+        #
+        # For a pure merging run (with_merging = True, online_coupling = False) NOTHING
+        # produced by the merger is ever read back into the clone: the merging is output
+        # aggregation only. The clone has already written its own month-end sentinel
+        # ("<clone>/maps/pcrglobwb_files_for_<date>_are_ready.txt", in PCRGlobWB.update);
+        # it therefore does NOT block here and proceeds straight to the next month. The
+        # merging process consumes that sentinel and runs ASYNCHRONOUSLY, lagging behind
+        # the compute front instead of forcing a hard per-month barrier across all clones.
+        # (The launcher's supervisor still waits for the merger to finish before the job
+        # exits, so no output is lost.)
+        if self.modelTime.isLastDayOfMonth() and \
+                self.configuration.online_coupling_between_pcrglobwb_and_modflow:
 
-            # wait until modflow files are ready
-            if self.configuration.online_coupling_between_pcrglobwb_and_modflow:
-                modflow_is_ready = False
-                self.count_check = 0
-                while modflow_is_ready == False:
-                    if datetime.datetime.now().second == 14 or \
-                            datetime.datetime.now().second == 29 or \
-                            datetime.datetime.now().second == 34 or \
-                            datetime.datetime.now().second == 59: \
-                            modflow_is_ready = self.check_modflow_status()
+            # Block until the MODFLOW output and then the merged files for this month are on
+            # disk. Each wait polls with a real sleep (no CPU spin) and gives up after a hard
+            # timeout, so an upstream process that wedges while still alive fails this clone
+            # fast (the launcher supervisor then tears the run down) rather than hanging the
+            # whole job to its wall-clock limit.
+            self._wait_until_ready(self.check_modflow_status, "MODFLOW output")
+            self._wait_until_ready(self.check_merging_status, "merged files")
 
-            # wait until merged files are ready
-            merged_files_are_ready = False
-            while merged_files_are_ready == False:
-                self.count_check = 0
-                if datetime.datetime.now().second == 14 or \
-                        datetime.datetime.now().second == 29 or \
-                        datetime.datetime.now().second == 34 or \
-                        datetime.datetime.now().second == 59: \
-                        merged_files_are_ready = self.check_merging_status()
+    def _wait_until_ready(self, status_check, description):
+        # Poll status_check() (returns True once the awaited sentinel files exist) with a
+        # real sleep, aborting with a non-zero exit if it is still not ready after
+        # wait_timeout_seconds. The timeout is a backstop for an upstream process that
+        # hangs while still alive (no exit code for the launcher supervisor to catch).
+        wait_start = datetime.datetime.now()
+        self.count_check = 0
+        ready = False
+        while ready == False:
+            ready = status_check()
+            if ready == False:
+                waited = (datetime.datetime.now() - wait_start).total_seconds()
+                if waited > self.wait_timeout_seconds:
+                    logger.error("Timed out after %.0f min waiting for %s for %s; aborting clone.",
+                                 waited / 60.0, description, str(self.modelTime.fulldate))
+                    sys.exit(1)
+                time.sleep(self.barrier_poll_seconds)
 
     def check_modflow_status(self):
 

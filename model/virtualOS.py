@@ -2842,6 +2842,65 @@ def cmd_line(command_line,using_subprocess = True):
     else:
         os.system(co)
 
+def run_parallel_and_supervise(commands, poll_seconds = 2, grace_seconds = 10):
+    '''Launch each command (a list of argv) as a background subprocess and supervise them.
+
+    Behaviour:
+      * every child runs in its own session (start_new_session = True) so its WHOLE process
+        tree can be torn down -- e.g. the merging process' multiprocessing.Pool workers and
+        its os.system merge subprocesses;
+      * if ANY child exits non-zero (a crash, including a fatal signal -> negative
+        returncode), all still-running children are terminated (SIGTERM, then SIGKILL after
+        a grace period) and that non-zero code is returned;
+      * if all children exit 0, 0 is returned.
+
+    This replaces the previous "cmd1 & cmd2 & ... & wait" shell string, whose bare `wait`
+    always returned 0 (masking crashes) and could not react to a sibling that had wedged
+    (e.g. the merging process hung waiting on a crashed clone's sentinel file). Reacting to
+    the FIRST non-zero exit lets a crashed clone tear the merging process down immediately,
+    instead of the job hanging until its scheduler wall-clock limit.
+    '''
+    import signal
+    import time as _time
+
+    procs = [subprocess.Popen(c, start_new_session = True) for c in commands]
+
+    def _signal_survivors(sig):
+        for p in procs:
+            if p.poll() is None:
+                try:
+                    os.killpg(os.getpgid(p.pid), sig)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+
+    failed_code = 0
+    try:
+        while True:
+            running = 0
+            for p in procs:
+                ret = p.poll()
+                if ret is None:
+                    running += 1
+                elif ret != 0:
+                    failed_code = ret
+                    break
+            if failed_code != 0 or running == 0:
+                break
+            _time.sleep(poll_seconds)
+    finally:
+        if failed_code != 0:
+            _signal_survivors(signal.SIGTERM)
+            _time.sleep(grace_seconds)
+            _signal_survivors(signal.SIGKILL)
+        # reap every child so we leave no zombies behind
+        for p in procs:
+            try:
+                p.wait(timeout = grace_seconds)
+            except Exception:
+                pass
+
+    return failed_code
+
 def plot_variable(pcr_variable, filename = None):
 
     if filename == None: filename = get_random_word(8) + ".map"
