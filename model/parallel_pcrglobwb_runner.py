@@ -156,12 +156,13 @@ if clone_codes[0] == "part_two":
 
 # command line(s) for PCR-GLOBWB 
 logger.info('Running transient PCR-GLOBWB with/without MODFLOW ')
+# Build the list of subprocess commands: one per clone, plus (optionally) the merging
+# process. Each runs with the SAME interpreter as this launcher (sys.executable), i.e.
+# the same conda/pcraster environment.
 i_clone = 0
-cmd = ''
+commands = []
 for clone_code in clone_codes:
-
-   cmd += "python deterministic_runner_glue_with_parallel_and_modflow_options.py " + iniFileName  + " " + debug_option + " " + clone_code + " "
-   cmd = cmd + " & "
+   commands.append([sys.executable, "deterministic_runner_glue_with_parallel_and_modflow_options.py", iniFileName, debug_option, clone_code])
    i_clone += 1
 
 
@@ -173,16 +174,10 @@ if with_merging_or_modflow:
 
    logger.info('Also with merging and/or MODFLOW processes ')
    
-   cmd += "python deterministic_runner_for_monthly_modflow_and_merging.py " + iniFileName +" "+debug_option +" transient"
-
-   cmd = cmd + " & "       
+   commands.append([sys.executable, "deterministic_runner_for_monthly_modflow_and_merging.py", iniFileName, debug_option, "transient"])
 
 
-# don't foget to add the following line
-cmd = cmd + "wait"       
-
-print(cmd)
-msg = "Call: "+str(cmd)
+msg = "Parallel commands: " + str(commands)
 logger.debug(msg)
 
 
@@ -193,5 +188,14 @@ logger.debug(msg)
 # shell ensures all subpackages remain importable without duplicating directory trees.
 os.environ['PYTHONPATH'] = path_of_this_module + os.pathsep + os.environ.get('PYTHONPATH', '')
 
-# execute PCR-GLOBWB and MODFLOW
-vos.cmd_line(cmd, using_subprocess = False)
+# Execute and SUPERVISE all clones + the merging process. The supervisor reacts to the
+# FIRST non-zero exit by tearing down the rest, so a crashed clone immediately kills the
+# merging process instead of leaving it -- and thus the whole job -- hung on a sentinel
+# file that will never appear. A non-zero result propagates as this runner's own exit
+# code; the run_model stage runs it with subprocess.run(check=True), so the pipeline
+# aborts instead of silently reporting success.
+return_status = vos.run_parallel_and_supervise(commands)
+if return_status != 0:
+    logger.error("A PCR-GLOBWB clone or the merging process failed (exit code %s); "
+                 "all other processes were terminated.", return_status)
+    sys.exit(1)

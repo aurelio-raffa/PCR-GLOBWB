@@ -25,6 +25,7 @@
 import os
 import sys
 import datetime
+import time
 import glob
 
 import pcraster as pcr
@@ -109,6 +110,24 @@ class DeterministicRunner(DynamicModel):
         # make the configuration available for the other method/function
         self.configuration = configuration
 
+        # polling interval (seconds) used while waiting for the per-clone month-end
+        # sentinels. A real time.sleep() replaces the former CPU-spinning poll so the
+        # merging process does not burn a core on the shared node while it waits.
+        # Overridable via globalOptions.
+        self.barrier_poll_seconds = 10
+        if 'barrier_poll_seconds' in self.configuration.globalOptions.keys():
+            self.barrier_poll_seconds = int(self.configuration.globalOptions['barrier_poll_seconds'])
+
+        # hard timeout (seconds) for waiting on the per-clone month-end sentinels. This is
+        # a BACKSTOP for a clone that hangs while still ALIVE (no exit code for the launcher
+        # supervisor to catch); on timeout the merging process exits non-zero so the
+        # supervisor tears the run down instead of the job hanging to its wall-clock limit.
+        # A crashed clone (process exits) is caught by the supervisor in seconds and never
+        # reaches this timeout. Overridable via globalOptions (wait_timeout_minutes).
+        self.wait_timeout_seconds = 180 * 60
+        if 'wait_timeout_minutes' in self.configuration.globalOptions.keys():
+            self.wait_timeout_seconds = int(self.configuration.globalOptions['wait_timeout_minutes']) * 60
+
         # indicating whether this run includes modflow or merging processes
         # - Only the "Global" and "part_one" runs include modflow or merging processes 
         self.include_merging_or_modflow = True
@@ -182,12 +201,22 @@ class DeterministicRunner(DynamicModel):
             # wait until all pcrglobwb model runs are done
             pcrglobwb_is_ready = False
             self.count_check = 0
+            wait_start = datetime.datetime.now()
             while pcrglobwb_is_ready == False:
-                if datetime.datetime.now().second == 14 or \
-                        datetime.datetime.now().second == 29 or \
-                        datetime.datetime.now().second == 34 or \
-                        datetime.datetime.now().second == 49: \
-                        pcrglobwb_is_ready = self.check_pcrglobwb_status()
+                # poll with a real sleep instead of CPU-spinning at fixed clock seconds
+                pcrglobwb_is_ready = self.check_pcrglobwb_status()
+                if pcrglobwb_is_ready == False:
+                    waited = (datetime.datetime.now() - wait_start).total_seconds()
+                    if waited > self.wait_timeout_seconds:
+                        # No exit code to observe: a clone is wedged ALIVE (it never wrote
+                        # its sentinel and never crashed, or the launcher supervisor would
+                        # already have caught it). Fail fast so the supervisor tears the run
+                        # down instead of the job hanging to its scheduler wall-clock limit.
+                        logger.error("Timed out after %.0f min waiting for per-clone month-end "
+                                     "files for %s; a clone appears wedged. Aborting merging.",
+                                     waited / 60.0, str(self.modelTime.fulldate))
+                        sys.exit(1)
+                    time.sleep(self.barrier_poll_seconds)
 
             # merging netcdf files at daily resolution
             start_date = '%04i-%02i-01' % (self.modelTime.year,
