@@ -138,7 +138,7 @@ def _check_core_count(nc: int, ini_path: str) -> None:
 # Shared LSF header / resources / output
 # --------------------------------------------------------------------------------------------------------------
 # Legend: -n cores, -R/-x placement, -M mem, -q queue, -o/-e logs, -P project code.
-HEADER_TEMPLATE = """#!/bin/sh
+HEADER_TEMPLATE = """#!/bin/bash
 #BSUB -n {nc}
 #BSUB {resources}
 #BSUB -M {mem}
@@ -146,6 +146,13 @@ HEADER_TEMPLATE = """#!/bin/sh
 #BSUB -o {wd}/logfile.%J.txt
 #BSUB -e {wd}/errfile.%J.txt
 #BSUB -P {pc}
+# The conda env's gdal activate.d hook sources gdal's bash-completion whenever $BASH_VERSION is set, and that
+# completion defines a hyphenated function name (_gdal-config) which is a FATAL syntax error in a NON-interactive
+# POSIX shell. LSF runs the job as /bin/sh (= bash --posix here), so `conda activate` below would abort the whole
+# job with exit 2 and only "_gdal-config: not a valid identifier" in the errfile. A batch job never needs shell
+# completions, so clear $BASH_VERSION to make that hook skip the broken file (belt-and-suspenders with the
+# #!/bin/bash shebang above, in case LSF runs the script under /bin/sh regardless of the shebang).
+unset BASH_VERSION
 module load anaconda
 source $(conda info --base)/etc/profile.d/conda.sh
 # Activate the env by NAME (no hard-coded paths, so the env can be relocated freely).
