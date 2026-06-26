@@ -148,7 +148,16 @@ HEADER_TEMPLATE = """#!/bin/sh
 #BSUB -P {pc}
 module load anaconda
 source $(conda info --base)/etc/profile.d/conda.sh
+# Activate the env by NAME (no hard-coded paths, so the env can be relocated freely).
 conda activate {conda_env}
+# Guard against the original new-HPC failure: when the env's dir is not yet in conda's envs_dirs, `conda activate`
+# fails and the shell silently continues on base python, which then crashes confusingly (e.g. "No module named
+# mlflow"). Catch it here. Every PCR-GLOBWB job (all three modes) needs pcraster and the base/anaconda env does
+# not have it, so a failing `import pcraster` is a reliable, path-free, all-modes signal that the requested env
+# is NOT active. We deliberately do NOT gate on `conda activate`'s exit status or on $CONDA_DEFAULT_ENV: an
+# activate.d hook can make a fully-successful activation return non-zero, and older conda may not export
+# $CONDA_DEFAULT_ENV -- either would falsely abort a previously-working run.
+python3 -c "import pcraster" || {{ echo "FATAL: conda env '{conda_env}' is not active (import pcraster failed) -- activation likely fell back to base python; check 'conda env list' and that the env's dir is registered in conda's envs_dirs" >&2; exit 1; }}
 """
 
 
@@ -220,6 +229,10 @@ def build_parallel(args: argparse.Namespace) -> str:
 def build_pipeline(args: argparse.Namespace) -> str:
     """MLflow pipeline run: export the (real) paths from CLI args, then launch run_project.py."""
     body = _header(args)
+    # Only the pipeline needs the MLflow/Fire harness deps -- assert them here, not in the shared header
+    # (which also serves the legacy deterministic/parallel model runners that import neither).
+    body += ('python3 -c "import mlflow, fire" || '
+             '{ echo "FATAL: env activated but missing mlflow/fire (the pipeline needs them)" >&2; exit 1; }\n')
     if args.repo_dir:
         body += f'cd {args.repo_dir}\n'
     if args.run_dir:
@@ -252,7 +265,9 @@ def _add_common(sub, default_name: str) -> None:
     sub.add_argument('--jq', required=True, help='LSF queue to submit to')
     sub.add_argument('--wd', required=True, help='Working directory for stdout/stderr log files')
     sub.add_argument('--pc', required=True, help='Project identifier (#BSUB -P)')
-    sub.add_argument('--conda_env', required=True, help='Name of the conda environment to activate')
+    sub.add_argument('--conda_env', required=True,
+                     help="Name of the conda environment to activate (must appear in 'conda env list'; "
+                          "if it lives in a custom dir, register that dir in conda's envs_dirs)")
     sub.add_argument('--tile', type=int, default=None,
                      help='Cores per node for `-R span[ptile=...]` (ignored with --excl); defaults to --nc')
     sub.add_argument('--excl', action='store_true', help='Reserve the whole node (#BSUB -x)')
