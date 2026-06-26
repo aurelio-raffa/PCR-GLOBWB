@@ -310,6 +310,11 @@ class Configuration(object):
         # working/starting directory where all scripts are stored
         path_of_this_module = os.path.abspath(os.path.dirname(__file__))
         self.starting_directory = path_of_this_module
+        # Alias exposed under the same name as configuration_for_modflow.Configuration
+        # so the merging runners (deterministic_runner_for_monthly_modflow_and_merging.py,
+        # deterministic_runner_merging*.py) can build the "python <dir>/merge_*.py" commands
+        # whether they were handed the base or the MODFLOW configuration object.
+        self.path_of_this_module = path_of_this_module
                            
         for filename in glob.glob(os.path.join(path_of_this_module, '*.py')):
         # ~ for filename in glob.glob(os.path.join(path_of_this_module, '**/*.py'), recursive=True):
