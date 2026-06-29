@@ -1,0 +1,127 @@
+#!/bin/bash
+#BSUB -J mlflow_ui
+#BSUB -n 1
+#BSUB -o mlflow_ui.%J.out
+#BSUB -e mlflow_ui.%J.err
+# Optional hard wall-clock backstop (in addition to the inactivity timer). Uncomment and set
+# it within your queue's limit if you want a guaranteed cap:
+##BSUB -W 360
+#
+# ---------------------------------------------------------------------------------------------
+# Serve the project's MLflow UI on a compute node and print the SSH forward spec for your
+# laptop. The server auto-shuts-down after a period of inactivity so it doesn't waste the slot.
+#
+# SUBMIT WITH (env vars are snapshotted into the job by LSF):
+#     ENVIRONMENT=pcrglobwb_python3 PORT=5050 bsub < mlflow_server.lsf
+#
+# Tunable env vars (all optional, with safe defaults):
+#     ENVIRONMENT           conda env to activate            (default: pcrglobwb_python3)
+#     PORT                  preferred start port, auto-bumps (default: 5050)
+#     IDLE_TIMEOUT_MINUTES  shut down after N idle minutes   (default: 60)
+# Queue: none is set here, so LSF uses the cluster's default queue; choose one at submit time with
+#     bsub -q <queue> < mlflow_server.lsf
+#
+# HARD RULE HONORED: nothing HPC-specific is hardcoded in this file -- the repo dir, the store
+# URI, the node name/IP and your username are all derived at runtime. No absolute paths, no
+# login host, no account name appear here, so the script is safe to commit/share.
+# ---------------------------------------------------------------------------------------------
+set -uo pipefail
+
+# ---- parameters (from the submission environment; defaults are generic, not HPC-specific) ----
+ENVIRONMENT="${ENVIRONMENT:-pcrglobwb_python3}"
+PORT="${PORT:-5050}"
+IDLE_TIMEOUT_MINUTES="${IDLE_TIMEOUT_MINUTES:-60}"
+CHECK_INTERVAL_SECONDS=60
+
+# ---- work from the submission directory (the repo), resolved at runtime, never hardcoded ----
+cd "${LS_SUBCWD:-$PWD}" || { echo "ERROR: cannot enter submission directory"; exit 1; }
+
+# ---- Step 1: load the anaconda module (initialise the module system first if needed) ----
+if ! command -v module >/dev/null 2>&1 && [ -n "${MODULESHOME:-}" ]; then
+  source "${MODULESHOME}/init/bash"
+fi
+module load anaconda || { echo "ERROR: 'module load anaconda' failed"; exit 1; }
+
+# ---- Step 2: activate the conda environment ----
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "$ENVIRONMENT" || { echo "ERROR: cannot activate conda env '$ENVIRONMENT'"; exit 1; }
+
+# ---- store the pipeline actually writes to (asked from the env so viewer==writer) ----
+STORE="$(python -c 'import mlflow; print(mlflow.get_tracking_uri())')"
+
+# ---- pick the first free port at/after $PORT (the compute node is shared) ----
+while ss -ltn 2>/dev/null | grep -q ":${PORT} "; do
+  echo "port ${PORT} busy, trying $((PORT + 1))"
+  PORT=$((PORT + 1))
+done
+
+# ---- Step 3: print the connection string for your LOCAL machine ----
+NODE_FQDN="$(hostname -f 2>/dev/null || hostname)"
+NODE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+cat <<EOF
+
+============================================================
+ MLflow UI -- SSH local-forward spec for your LOCAL machine:
+
+     ${PORT}:${NODE_FQDN}:${PORT}
+   (or, if that name won't resolve from the login node, use the IP:)
+     ${PORT}:${NODE_IP}:${PORT}
+
+ e.g.   ssh -N -L ${PORT}:${NODE_FQDN}:${PORT} <you>@<login-host>
+ then open  http://127.0.0.1:${PORT}
+
+ Store:          ${STORE}
+ Auto-shutdown:  after ${IDLE_TIMEOUT_MINUTES} min with no HTTP requests
+============================================================
+
+EOF
+
+# ---- Step 4: start the server as a child of this job (so LSF cleanup also reaps it) ----
+LOG="$(mktemp)"
+mlflow ui --backend-store-uri "$STORE" --host 0.0.0.0 --port "$PORT" >"$LOG" 2>&1 &
+SERVER_PID=$!
+
+cleanup() {
+  kill -TERM "$SERVER_PID" 2>/dev/null
+  pkill -TERM -P "$SERVER_PID" 2>/dev/null
+  sleep 5
+  kill -KILL "$SERVER_PID" 2>/dev/null
+  pkill -KILL -P "$SERVER_PID" 2>/dev/null
+  [ -n "${TAIL_PID:-}" ] && kill "$TAIL_PID" 2>/dev/null
+  rm -f "$LOG" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT TERM INT
+
+# mirror the server log into the job's stdout so `bpeek <jobid>` shows startup + requests
+tail -n +1 -F "$LOG" 2>/dev/null &
+TAIL_PID=$!
+
+# give it a moment and confirm it actually came up
+sleep 5
+if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+  echo "ERROR: MLflow server exited during startup (see log above)."
+  exit 1
+fi
+
+# ---- inactivity watchdog ----
+# Counts only HTTP request lines in the access log, so the once-a-minute background scheduler
+# does NOT count as activity. If no new request arrives for IDLE_TIMEOUT_MINUTES, shut down.
+TIMEOUT_S=$(( IDLE_TIMEOUT_MINUTES * 60 ))
+prev=0
+idle=0
+while kill -0 "$SERVER_PID" 2>/dev/null; do
+  sleep "$CHECK_INTERVAL_SECONDS"
+  now=$(grep -cE 'HTTP/[0-9]' "$LOG" 2>/dev/null); now=${now:-0}
+  if [ "$now" -gt "$prev" ]; then
+    prev=$now
+    idle=0
+  else
+    idle=$(( idle + CHECK_INTERVAL_SECONDS ))
+    if [ "$idle" -ge "$TIMEOUT_S" ]; then
+      echo "No MLflow HTTP requests for ${IDLE_TIMEOUT_MINUTES} min -- shutting down to free the slot."
+      break
+    fi
+  fi
+done
+# cleanup() runs via the EXIT trap

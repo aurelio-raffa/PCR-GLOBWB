@@ -163,6 +163,51 @@ More information can be printed out on the terminal by executing:
 python create_batch_job_file.py --help
 ```
 
+### Viewing experiment tracking (MLflow UI)
+
+Pipeline runs (see [`run_project.py`](run_project.py)) are tracked with [MLflow](https://mlflow.org/),
+whose store lives in the repository directory on the cluster's shared filesystem. Because login
+nodes forbid long-running servers, the MLflow UI must be served from a compute node and reached
+through an SSH tunnel via the login node. Two helpers automate this; like the LSF job generator,
+**they hardcode no paths, hostnames or account names** — the repo directory, store URI, compute-node
+address and username are all resolved at runtime, so the scripts are safe to version.
+
+**Batch (recommended), via LSF** — [`mlflow_server.lsf`](mlflow_server.lsf):
+
+```shell
+ENVIRONMENT=pcrglobwb_python3 PORT=5050 bsub < mlflow_server.lsf
+```
+
+It loads the `anaconda` module, activates `$ENVIRONMENT`, serves the store the pipeline writes to,
+and **auto-shuts-down after `IDLE_TIMEOUT_MINUTES` (default 60) of no activity** so the slot is not
+wasted. No queue is hardcoded: LSF uses the cluster's default queue unless you pass one with
+`bsub -q <queue> < mlflow_server.lsf`.
+Since this is a batch job, read the SSH forward spec it prints from the job output:
+
+```shell
+bpeek <jobid>      # e.g. prints   5050:<compute-node>:5050
+```
+
+**Interactive**, from inside a compute-node session — [`start_mlflow_ui.sh`](start_mlflow_ui.sh):
+
+```shell
+./start_mlflow_ui.sh [PORT]
+```
+
+Then, on your **local machine**, open the tunnel using the spec printed by either helper and browse
+the UI:
+
+```shell
+ssh -N -L 5050:<compute-node>:5050 <you>@<login-host>
+# then open http://127.0.0.1:5050
+```
+
+> **Beware**
+>
+> The server binds `0.0.0.0` so the login node can reach it over the cluster LAN; while it runs, the
+> (unauthenticated) MLflow UI and REST API are reachable by other users on that network. Use an
+> uncommon port and stop the server when you are done.
+
 ## Exercises/cooking recipes 
 
 We included some exercise/cooking recipes for running PCR-GLOBWB. You can find these documents in the folder [exercise](exercise) within this repository. While these exercises were generally designed for our own computing facilities (e.g. velocity and eejit servers), they should be adaptable for use on other computing machines.
