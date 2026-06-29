@@ -23,7 +23,14 @@ Per-stage YAML keys and how the orchestrator treats them:
     :data:`ARTIFACT_PARAM_NAMES` has the file at its path logged as an MLflow artifact on the parent run
     -- by default only when the file extension is in :data:`ARTIFACT_DEFAULT_EXTENSIONS`, or for any
     extension when the pipeline's ``log_artifacts`` is true. This is pure metadata logging; it does not
-    affect what the stage received.
+    affect what the stage received. Files are de-duplicated by path, so a log named on two stages
+    (run_model + diagnostics) is uploaded only once.
+  * Log capture: a ``.log`` file reached through a log-named parameter (:data:`LOG_PARAM_NAMES`, e.g.
+    ``log-file``) is logged even under the default ``log_artifacts: false``. Because ``run_model`` is
+    ``continue-on-error``, a crashed model's log is still captured (the deferred-failure path logs the
+    stage's own params). On SIGTERM/SIGINT (e.g. LSF's grace signal before SIGKILL on a run-limit/bkill)
+    a handler best-effort uploads the log(s) and fails the run. SIGKILL/OOM/node-crash run no cleanup at
+    all and are NOT covered -- the log still survives on disk for an out-of-band sweeper to recover.
   * ``metrics-path: <p>`` is, in addition, read as a flat ``{name: number}`` JSON and logged as a metric
     on both the stage run and the parent run.
 The fully-substituted pipeline YAML is always logged as an artifact on the parent run.
@@ -31,9 +38,10 @@ The fully-substituted pipeline YAML is always logged as an artifact on the paren
 import os
 import sys
 import json
+import signal
 import logging
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import yaml
 import mlflow
@@ -48,17 +56,25 @@ logger.addHandler(console_handler)
 
 # --- artifact-name allowlist (see module docstring) -------------------------------------------------
 # A parameter is a candidate for artifact logging when its NAME (normalised: lower-case, '_'->'-') is in
-# this set. The handling is purely additive -- the parameter is still forwarded to the stage unchanged.
+# ARTIFACT_PARAM_NAMES. The handling is purely additive -- the parameter is still forwarded unchanged.
+#
+# LOG_PARAM_NAMES is the subset whose value is a run/model log file: a ``.log`` reached through one of
+# these names is logged even under the default ``log_artifacts: false`` (so a run's log -- in particular
+# a crashed model's log -- is always captured) WITHOUT also pulling in unrelated big files. See
+# :func:`_is_log_param` and the gate in :func:`_log_stage_artifacts`.
+LOG_PARAM_NAMES = {'log-file', 'log', 'logfile', 'output-log'}
+
 ARTIFACT_PARAM_NAMES = {
     'config', 'config-path', 'config-file', 'config-ini',
     'summary', 'summary-path', 'output-summary',
     'metrics', 'metrics-path', 'metrics-config', 'output-metrics',
     'csv-path', 'output-csv',
     'output-path', 'output-image',
-}
+} | LOG_PARAM_NAMES
 # When ``log_artifacts`` is false (the default), only candidate files with one of these extensions are
-# logged -- the small, always-worth-keeping text artifacts. With ``log_artifacts`` true, any extension is
-# logged (e.g. .png images, .nc model output, the .log convenience file).
+# logged -- the small, always-worth-keeping text artifacts (plus ``.log`` files reached via a
+# LOG_PARAM_NAMES parameter, special-cased in _log_stage_artifacts). With ``log_artifacts`` true, any
+# extension is logged (e.g. .png images, .nc model output).
 ARTIFACT_DEFAULT_EXTENSIONS = {'.ini', '.yaml', '.yml', '.json', '.txt', '.csv'}
 
 
@@ -76,27 +92,39 @@ def _coerce_bool(value, default: bool = False) -> bool:
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def _is_log_param(name: str) -> bool:
+    """True when a parameter name denotes a log file (see :data:`LOG_PARAM_NAMES`)."""
+    return _normalize_param_name(name) in LOG_PARAM_NAMES
+
+
 def _log_stage_artifacts(client, ctx: 'PipelineContext', parameters: dict, stage_run_id) -> None:
     """Archive a stage's allowlisted-name file params on the parent run, and log its ``metrics-path``
     JSON as MLflow metrics (on the stage run, when known, and the parent).
 
     Side-effect only and deliberately NON-RAISING: it is called both after a successful stage and,
     best-effort, after a failed ``continue-on-error`` stage, so whatever outputs the stage managed to
-    write (e.g. the diagnostics summary/CSV/metrics) are still captured even when the stage exited
-    non-zero. ``stage_run_id`` is None when the stage run id is unknown (a failed stage).
+    write (e.g. the diagnostics summary/CSV/metrics, or the model log) are still captured even when the
+    stage exited non-zero. ``stage_run_id`` is None when the stage run id is unknown (a failed stage).
     """
-    already_logged: set = set()
     for key, value in parameters.items():
         if _normalize_param_name(key) not in ARTIFACT_PARAM_NAMES:
             continue
         path = str(value)
-        if not os.path.isfile(path) or path in already_logged:
+        if not os.path.isfile(path):
+            continue
+        # De-dup by canonical path on the parent run: the model log is named on BOTH run_model and
+        # diagnostics, so without this it would be uploaded twice. The set lives on the context so the
+        # de-dup also spans stages and the termination handler -- each file is logged at most once.
+        canonical = os.path.abspath(path)
+        if canonical in ctx.uploaded_paths:
             continue
         extension = os.path.splitext(path)[1].lower()
-        if ctx.log_artifacts or extension in ARTIFACT_DEFAULT_EXTENSIONS:
+        # Log when: artifacts are forced on; OR a small default-extension text file; OR a .log reached
+        # through a log-named param (so the run log is captured even with the default log_artifacts:false).
+        if ctx.log_artifacts or extension in ARTIFACT_DEFAULT_EXTENSIONS or (_is_log_param(key) and extension == '.log'):
             try:
                 client.log_artifact(ctx.orchestrator_run_id, path)
-                already_logged.add(path)
+                ctx.uploaded_paths.add(canonical)
             except Exception as exc:  # logging is a convenience; never let it break the pipeline
                 logger.warning('could not log artifact %s: %s', path, exc)
 
@@ -134,6 +162,7 @@ class PipelineContext:
     orchestrator_run_id: str             # the parent ("orchestrator") MLflow run
     project_uri: str
     log_artifacts: bool
+    uploaded_paths: set = field(default_factory=set)  # canonical artifact paths already logged (de-dup)
 
 
 def execute_stage(stage_name: str, parameters: dict, index: int, total: int, ctx: PipelineContext) -> dict | None:
@@ -189,6 +218,51 @@ def execute_stage(stage_name: str, parameters: dict, index: int, total: int, ctx
     return None
 
 
+def _collect_log_paths(config: dict) -> list:
+    """Resolved paths of every log-named stage parameter -- the files to best-effort upload if the run is
+    terminated by a signal before it finishes normally."""
+    paths: list = []
+    for stage in config.get('stages', []) or []:
+        for _stage_name, parameters in (stage or {}).items():
+            for key, value in (parameters or {}).items():
+                if _is_log_param(key):
+                    paths.append(str(value))
+    return paths
+
+
+def _install_termination_handler(ctx: PipelineContext, log_paths: list) -> None:
+    """Arm SIGTERM/SIGINT handlers that best-effort archive ``log_paths`` on the parent run and then exit,
+    so the active run is marked FAILED on the way out.
+
+    This converts the scheduler's grace signal (e.g. LSF's SIGTERM before SIGKILL on a run-limit/bkill)
+    into a real capture of the on-disk log -- which the live tee keeps current to the last flushed line.
+    It CANNOT help with SIGKILL/OOM/node-crash, which run no Python at all. The upload is non-raising and
+    de-duplicated against what the stages already logged (shared ``ctx.uploaded_paths``).
+    """
+    def _handle(signum, _frame):
+        logger.error('received signal %s -- uploading run logs and failing the pipeline', signum)
+        for path in log_paths:
+            if not os.path.isfile(path):
+                continue
+            canonical = os.path.abspath(path)
+            if canonical in ctx.uploaded_paths:
+                continue
+            try:
+                ctx.tracking_client.log_artifact(ctx.orchestrator_run_id, path)
+                ctx.uploaded_paths.add(canonical)
+            except Exception as exc:  # cleanup must never raise from the upload
+                logger.warning('could not log artifact %s on termination: %s', path, exc)
+        # Raise so the `with mlflow.start_run()` context marks the run FAILED and the process exits non-zero.
+        # SystemExit is a BaseException, so it bypasses the `except Exception` continue-on-error handling.
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handle)
+        except (ValueError, OSError):  # e.g. not running in the main thread -- skip, don't fail the run
+            logger.warning('could not install termination handler for signal %s', sig)
+
+
 def run(config_file: str):
     """Parse the pipeline YAML and execute its stages sequentially under one MLflow run."""
     config = parse_config(os.path.join(root_path, config_file))
@@ -210,6 +284,11 @@ def run(config_file: str):
             project_uri=project_uri,
             log_artifacts=log_artifacts,
         )
+
+        # Best-effort capture on premature termination: on SIGTERM (LSF's grace signal before SIGKILL on a
+        # run-limit/bkill) or SIGINT, upload whatever log files the stages have written so far and let the
+        # run be marked FAILED. Only covers signals the process can still handle (not SIGKILL/OOM/crash).
+        _install_termination_handler(ctx, _collect_log_paths(config))
 
         stages = config['stages']
         total_steps = len(stages)

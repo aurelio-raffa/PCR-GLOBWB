@@ -26,10 +26,15 @@ tags:                              # arbitrary tags attached to the parent (orch
 # the parent run. Such parameters are flagged below with `# -> MLflow artifact`.
 #   allowlisted parameter names : config, config-path, config-file, config-ini, summary, summary-path,
 #                                 output-summary, metrics, metrics-path, metrics-config, output-metrics,
-#                                 csv-path, output-csv, output-path, output-image
-#   logged by default (log_artifacts: false) only when the file extension is one of:
+#                                 csv-path, output-csv, output-path, output-image,
+#                                 log-file, log, logfile, output-log
+#   logged by default (log_artifacts: false) when the file extension is one of:
 #                                 .ini  .yaml  .yml  .json  .txt  .csv
-#   log_artifacts: true         -> also log allowlisted params with ANY extension (e.g. .png, .log, .nc)
+#                                 ...PLUS a .log file named via a log-* param (e.g. log-file): the run
+#                                 log is ALWAYS captured -- on success, on a model crash, and on a
+#                                 SIGTERM/run-limit termination (NOT on SIGKILL/OOM/node-crash, which run
+#                                 no cleanup; the log still survives on disk in those cases).
+#   log_artifacts: true         -> also log allowlisted params with ANY extension (e.g. .png, .nc)
 # The fully-substituted copy of THIS yaml is ALWAYS logged as an artifact, regardless of the above.
 # `metrics-path` is, in addition, read as a flat {name: number} JSON and logged as MLflow metrics.
 # -----------------------------------------------------------------------------------------------------
@@ -80,7 +85,7 @@ stages:
         config:       '{{$PCRG_RUN_DIR}}/ini/pcrglobwb_run.ini'   # = create_ini's output-path; -> MLflow artifact (.ini)
         debug-option: 'parallel'                             # runner's 2nd positional arg (parallel mode)
         extra-args:   ''                                     # shell-split, appended verbatim
-        log-file:     '{{$PCRG_RUN_DIR}}/output/model_run.log'   # tee model stdout+stderr here for the diagnostics stage
+        log-file:     '{{$PCRG_RUN_DIR}}/output/model_run.log'   # tee model stdout+stderr; -> MLflow artifact (.log), captured even on a model crash / SIGTERM
         continue-on-error: true                              # a model crash does NOT abort here: flow into diagnostics
                                                              #   first (which writes its outputs), then fail at the end.
 
@@ -92,7 +97,7 @@ stages:
     #    artifacts are still logged before the pipeline is failed at the end of the run.
     #    Standalone: `python diagnostics.py --log-file run.log --summary-path s.txt`.
     - diagnostics:
-        log-file:      '{{$PCRG_RUN_DIR}}/output/model_run.log'             # input: the logfile run_model teed
+        log-file:      '{{$PCRG_RUN_DIR}}/output/model_run.log'             # input: the logfile run_model teed (already archived above; de-duped, logged once)
         summary-path:  '{{$PCRG_RUN_DIR}}/reports/diagnostics_summary.txt'  # -> MLflow artifact (.txt)
         csv-path:      '{{$PCRG_RUN_DIR}}/reports/diagnostics.csv'          # -> MLflow artifact (.csv)
         metrics-path:  '{{$PCRG_RUN_DIR}}/reports/diagnostics_metrics.json' # -> MLflow artifact (.json) + logged as metrics
