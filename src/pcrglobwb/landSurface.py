@@ -10,12 +10,45 @@ from pcrglobwb.common import virtualOS as vos
 from pcrglobwb.ncConverter import PCR2netCDF
 from pcrglobwb.water_demand import main_water_demand as water_demand
 from pcrglobwb.water_management import main_water_management as water_management
+# QUAlloc (src/qualloc/) is imported unconditionally but built and called only when
+# [waterManagementOptions] using_qualloc = True
+# (online_pcrglobwb_qualloc_5arcminutes.ini:159). It replaces
+# water_management.WaterManagement as the allocation scheme.
 from qualloc.model_configuration import configuration_parser
 from qualloc.model_time import model_time
 from qualloc.qualloc_main import qualloc_model
 from qualloc.qualloc_reporting import qualloc_reporting
 
 logger = logging.getLogger(__name__)
+
+# ANNOTATION OVERVIEW (comments and docstrings only; the code is unchanged). Scope of
+# the annotations in this file: the parts that build or call water demand and water
+# management (or QUAlloc), and the attributes that routing and the water bodies read
+# from the land surface. Soil, snow and interception code is not annotated.
+#
+# Attributes of LandSurface read by routing.Routing on the same day (all per cell; m/day
+# means a water height over the WHOLE cell area per daily step; multiply by
+# routing.cellArea, m2, to get m3/day):
+# - actSurfaceWaterAbstract (m/day): surface water taken at this source cell; subtracted
+#   from routing.channelStorage before the lake and reservoir update
+#   (routing.Routing.simple_update), so at water-body cells it lowers the storage seen
+#   by the release rule and the inflow residual (lake_and_reservoir_inflow).
+# - nonIrrReturnFlowVolume (m3/day) and nonIrrReturnFlowVolumePerSector (dict, m3/day):
+#   non-irrigation return flow, added to routing.channelStorage at the demand cell (or,
+#   for domestic and manufacture, at a wastewater-treatment-plant cell when WWtPlantsNC
+#   is set, as in pcrglobwb_5arcminutes.ini:509). nonIrrReturnFlow (m/day) is used by
+#   the kinematicWave method only.
+# - landSurfaceRunoff (m/day): direct runoff plus interflow; added to channelStorage
+#   with groundwater.baseflow.
+# - actualET (m/day): land-surface evaporation over the whole cell; routing computes the
+#   open-water evaporation of channels, lakes and reservoirs as the top-up
+#   max(0, kc * ET0 - actualET) * dynamicFracWat (routing.Routing.calculate_potential_
+#   evaporation).
+# - irrGrossDemand, netLqWaterToSoil: only for DynQual (routing quality = True).
+# Precipitation on lakes and reservoirs reaches them only through this soil scheme: the
+# land-cover fractions cover the whole cell, water fraction included; the water fraction
+# (routing.WaterBodies.fracWat) is used here only to reduce capillary rise
+# (calculateCapRiseFrac).
 
 
 class LandSurface(object):
@@ -211,6 +244,8 @@ class LandSurface(object):
 
         # water demand options: irrigation efficiency, non-irrigation water demand and desalination supply;
         # TODO: deactivate due to the new water_demand and water_management modules
+        # (in this revision the method only sets dynamicIrrigationArea from
+        # [landSurfaceOptions] historicalIrrigationArea; see CAUTION (M3) there)
         self.waterDemandOptions(iniItems)
 
         # TODO: add an option for natural runs (without water use and reservoirs)
@@ -305,6 +340,12 @@ class LandSurface(object):
             logger.warning(msg)
             logger.warning(msg)
 
+        # choice of the allocation scheme: QUAlloc (True) or
+        # water_management.WaterManagement (False, the default).
+        # pcrglobwb_5arcminutes.ini:142 sets False;
+        # online_pcrglobwb_qualloc_5arcminutes.ini:159 sets True. The same key is read
+        # by routing.py and groundwater.py, which change their states and options
+        # accordingly.
         self.using_qualloc = False
         if "using_qualloc" in iniItems.waterManagementOptions.keys():
             if iniItems.waterManagementOptions["using_qualloc"] == "True":
@@ -342,11 +383,23 @@ class LandSurface(object):
         # initial conditions (per land cover type)
         self.getInitialConditions(iniItems, initialState)
 
+        # sectoral water demand (water_demand/main_water_demand.py): domestic, industry,
+        # manufacture, thermoelectric and livestock gross and net demand read from
+        # monthly files (m/day over the cell), and one irrigation demand object per
+        # "irr*" land cover (m/day over that land cover's area). Used by both allocation
+        # schemes.
         self.water_demand = water_demand.WaterDemand(
             iniItems, landmask, self.coverTypes, self.landCoverObj
         )
 
         if self.using_qualloc:
+            # QUAlloc path: QUAlloc reads its own configuration file (.cfg, given by
+            # configuration_file_for_qualloc), including its allocation zones
+            # (surfacewater_allocation_zones etc., 60 arcmin in
+            # online_pcrglobwb_qualloc/qualloc_5arcminutes.cfg:298-305) and its
+            # long-term availability and demand states. None of the
+            # [waterManagementOptions] allocation keys of the PCR-GLOBWB ini are used on
+            # this path, and self.water_management is never created.
             qualloc_config_file = iniItems.waterManagementOptions[
                 "configuration_file_for_qualloc"
             ]
@@ -408,6 +461,11 @@ class LandSurface(object):
             self.qualloc_reporting.initialize()
 
         else:
+            # standard path: PCR-GLOBWB's own allocation
+            # (water_management/main_water_management.py); reads
+            # [waterManagementOptions] and writes defaults back into iniItems before
+            # groundwater.Groundwater is built (pcrglobwb.PCRGlobWB.createSubmodels
+            # builds landSurface first).
             self.water_management = water_management.WaterManagement(iniItems, landmask)
 
         # old-style reporting (useful for debugging)
@@ -645,6 +703,17 @@ class LandSurface(object):
 
     def waterDemandOptions(self, iniItems):
         # historical irrigation area (ha)
+        # CAUTION (M3): the key is read from [landSurfaceOptions] (as on upstream
+        # master), but both RAWS 5-arcmin inis set historicalIrrigationArea under
+        # [waterDemandOptions] (pcrglobwb_5arcminutes.ini:118,
+        # online_pcrglobwb_qualloc_5arcminutes.ini:134). configuration.py then writes
+        # the default "None" into landSurfaceOptions, so dynamicIrrigationArea is False
+        # and the irrigated area is the static fracVegCover of [irrPaddyOptions] and
+        # [irrNonPaddyOptions], not the yearly historical map. This changes the
+        # irrigation demand, the largest demand that can fall on lakes and reservoirs.
+        # The keys landCoverTypes and noLandCoverFractionCorrection are also set under
+        # [waterDemandOptions] and not read, but their defaults equal the values set.
+        # Not confirmed by a run.
         self.dynamicIrrigationArea = False
         if iniItems.landSurfaceOptions["historicalIrrigationArea"] != "None":
             logger.info(
@@ -837,6 +906,13 @@ class LandSurface(object):
         dzGroundwater = pcr.max(0.0, dzGroundwater)
 
         # approximate cell fraction influenced by capillary rise
+        # INTERFACE: routing.WaterBodies.fracWat (dimensionless, lake and reservoir
+        # fraction of the cell, yearly input fracWaterInp, waterBodies.py). It is the
+        # only use of the water-body fraction in the land surface: capillary rise is
+        # reduced over the water fraction (CRFRAC below); precipitation, evaporation and
+        # runoff are computed over the whole cell. On the first time step the land
+        # surface runs before routing has loaded the water-body parameters, so fracWat
+        # is read here directly from the same input.
         FRACWAT = pcr.spatial(pcr.scalar(0.0))
         if currTimeStep.timeStepPCR > 1:
             FRACWAT = pcr.cover(routing.WaterBodies.fracWat, 0.0)
@@ -1090,6 +1166,21 @@ class LandSurface(object):
         self.scaleModifiedLandCoverFractions()
 
     def update(self, meteo, groundwater, routing, currTimeStep):
+        """Land-surface update of one daily time step, including water demand and its
+        allocation to water sources.
+
+        Called by pcrglobwb.PCRGlobWB.update after meteo and BEFORE groundwater and
+        routing of the same day, so the routing and groundwater objects passed in hold
+        the states at the end of the previous day (one-day lag for the water available
+        for abstraction and for the long-term discharge statistics).
+
+        Order: land-cover parameters, potential ET, interception, snow; water demand
+        (water_demand.update, m/day); conversion to m3/day per cell; allocation (QUAlloc
+        or WaterManagement), which sets the abstraction and allocation attributes and
+        the non-irrigation return flows; satisfied demand; then the soil water balance
+        with the allocated irrigation water (land_surface_hydrology_update), which
+        produces landSurfaceRunoff, gwRecharge and actualET for groundwater and routing.
+        """
         # set the land cover parameters per land cover type: fracVegCover, arnoBeta, rootZoneWaterStorageMin,
         # rootZoneWaterStorageRange, maxRootDepth, adjRootFrUpp, adjRootFrLow, effSatAt50, effPoreSizeBetaAt50,
         # cropKc, coverFraction and interceptCap
@@ -1134,6 +1225,15 @@ class LandSurface(object):
         )
 
         # gross sectoral water demands (m3)
+        # dict sector -> map, m3/day per demand cell: POTENTIAL gross demand (water to
+        # be withdrawn, including losses), not limited by availability. Non-irrigation
+        # demands are m/day over the whole cell times routing.cellArea (m2); irrigation
+        # is m/day over the irrigated land-cover area times cellArea times fracVegCover.
+        # EXTENSION POINT: this dict is the full potential demand of the day, known
+        # before routing of the same day; a demand-driven release scheme can take it
+        # from here (see also WaterManagement.update). Contract: keep m3/day per demand
+        # cell; store it on self (it is a local variable today) so that routing can read
+        # it, and aggregate it over each reservoir's command area there.
         vol_gross_sectoral_water_demands = {}
 
         # non-irrigation demand (m3)
@@ -1173,6 +1273,10 @@ class LandSurface(object):
         # availability (surface water and groundwater from the previous time step, desalination from the
         # current one); output: abstraction per source and allocation, including irrigation supply for
         # the next time step; the water management calculation is done in volume (m3)
+        # CAUTION: see M11. By the code, the allocated irrigation water is applied in
+        # this SAME time step (satisfied_irrigation_water_height, passed to
+        # land_surface_hydrology_update at the end of this method); no carry-over of
+        # irrigation supply to the next time step was found.
 
         if self.using_qualloc:
             # QUAlloc: update; water quality states (if specified)
@@ -1193,6 +1297,26 @@ class LandSurface(object):
                 )
 
             # update QUAlloc for the current date
+            # INTERFACE (to QUAlloc, src/qualloc/qualloc_main.py qualloc_model.update):
+            # - gross and net demands per sector, m/day over the cell (irrigation as the
+            #   cell total divided by cellArea);
+            # - surfacewater_storage = routing.channelStorage / cellArea (m): the WHOLE
+            #   channel storage at the end of the previous day. At lake and reservoir
+            #   cells this is the water-body storage spread over the body's cells (end
+            #   of previous day), with no environmental-flow reserve, no 90 % cap and no
+            #   reservoir lower limit (unlike routing.readAvlChannelStorage on the
+            #   standard path). CAUTION (M14).
+            # - surfacewater_discharge = routing.discharge (m3/s, previous day; feeds
+            #   QUAlloc's long-term monthly availability), surfacewater_totalrunoff =
+            #   routing.runoff (m/day, previous day);
+            # - groundwater recharge, baseflow (m/day) and storage (m), previous day.
+            # QUAlloc then withdraws, per cell, min(potential withdrawal, surfacewater_
+            # storage * cellArea) (qualloc_main.py, coupled branch), where the potential
+            # withdrawal comes from its own zonal allocation of demand to a long-term
+            # availability (Manning channel volume from long-term discharge plus
+            # runoff). QUAlloc has no notion of lakes or reservoirs; whether it places
+            # large withdrawals on reservoir cells depends on that long-term
+            # availability at those cells and is not determined from the code.
             self.qualloc_model_time.update(currTimeStep.timeStepPCR)
             self.qualloc_model.update(
                 online_coupling_to_quantity=self.using_qualloc,
@@ -1240,6 +1364,11 @@ class LandSurface(object):
 
             # variables passed to other modules:
             # sectoral water allocation from all sources (despite the 'withdrawal' in the names)
+            # (m3/day per DEMAND cell; reported as <sector>WaterWithdrawal after
+            # division by cellArea)
+            # CAUTION (M12): every block below falls back to zero on ANY exception
+            # (e.g. a sector absent from QUAlloc's sector list), silently. A missing
+            # irrigation allocation would then give zero irrigation water without error.
 
             # domestic: total allocated water (m3)
             try:
@@ -1366,6 +1495,13 @@ class LandSurface(object):
             )
 
             # surface water abstraction and allocation, total of all sectors (m/day)
+            # INTERFACE (from QUAlloc): actSurfaceWaterAbstract = sum over sectors of
+            # QUAlloc's renewable surface-water withdrawal (m3/day at the SOURCE cell) /
+            # cellArea, m/day. routing.Routing.simple_update subtracts it from
+            # channelStorage exactly as on the standard path, i.e. before the lake and
+            # reservoir update, so a QUAlloc withdrawal at a reservoir cell lowers the
+            # reservoir storage and its inflow residual on the same day.
+            # allocSurfaceWaterAbstract is the same water at the DEMAND cells.
             self.actSurfaceWaterAbstract = (
                 sum(
                     list(
@@ -1440,6 +1576,10 @@ class LandSurface(object):
             )
 
             # non-irrigation variables (m3/day)
+            # INTERFACE (from QUAlloc): return flows per sector (m3/day, as computed by
+            # QUAlloc's consumption and return-flow fractions), read by routing like on
+            # the standard path (nonIrrReturnFlowVolume,
+            # nonIrrReturnFlowVolumePerSector).
             self.nonIrrReturnFlowVolumePerSector = {}
             self.nonIrrWaterConsumptionVolumePerSector = {}
 
@@ -1534,6 +1674,11 @@ class LandSurface(object):
 
         # standard PCR-GLOBWB water management
         else:
+            # INTERFACE: water_management.WaterManagement.update reads
+            # routing.readAvlChannelStorage (m3, end of previous day),
+            # routing.avgDischarge and avgBaseflow (m3/s), and the groundwater states of
+            # the previous day. With the standard RAWS configuration all sources are
+            # local only (N5).
             self.water_management.update(
                 vol_gross_sectoral_water_demands=vol_gross_sectoral_water_demands,
                 groundwater=groundwater,
@@ -1585,6 +1730,11 @@ class LandSurface(object):
             self.desalinationAllocation = self.water_management.desalinationAllocation
 
             # surface water abstraction and allocation, total of all sectors (m)
+            # INTERFACE: m/day over the cell. actSurfaceWaterAbstract (at the source
+            # cell) is subtracted from routing.channelStorage the same day, before
+            # WaterBodies.update (routing.Routing.simple_update); reported as
+            # surfaceWaterAbstraction (reporting.py). allocSurfaceWaterAbstract is at
+            # the demand cell.
             self.allocSurfaceWaterAbstract = (
                 self.water_management.allocSurfaceWaterAbstract
             )
@@ -1609,6 +1759,15 @@ class LandSurface(object):
             )
 
             # non-irrigation return flow (m3)
+            # return flow = return-flow fraction (1 - net / gross demand, from the
+            # demand files) times the SATISFIED gross demand of the sector, m3/day at
+            # the demand cell.
+            # INTERFACE: routing.Routing.simple_update adds nonIrrReturnFlowVolume to
+            # channelStorage at the demand cell on the same day, before the lake and
+            # reservoir update; with WWtPlantsNC set (pcrglobwb_5arcminutes.ini:509) the
+            # domestic and manufacture parts are moved to treatment-plant cells
+            # (routing.Routing.return_flows_to_wastewater_treatment_plants). A return
+            # flow located on a water-body cell becomes inflow of that water body.
             self.nonIrrReturnFlowVolumePerSector = {}
             self.nonIrrReturnFlowVolumePerSector["domestic"] = (
                 self.water_demand.water_demand_domestic.domesticReturnFlowFraction
@@ -1648,6 +1807,10 @@ class LandSurface(object):
             # (m)
             self.nonIrrReturnFlow = self.nonIrrReturnFlowVolume / self.cellArea
 
+            # rounded DOWN to 0.1 mm/day; the volume is recomputed from the rounded
+            # value, so up to 0.1 mm/day times cellArea of return flow is dropped per
+            # cell (it is not added to consumption either, which is computed per sector
+            # below from the unrounded values)
             self.nonIrrReturnFlow = (
                 pcr.rounddown(self.nonIrrReturnFlow * 10000.0) / 10000.0
             )
@@ -1695,6 +1858,15 @@ class LandSurface(object):
             self.reducedCapRise = self.water_management.reducedCapRise
 
         # water demand limited by the available/allocated water (m)
+        # CAUTION (M5): despite its name, totalPotentialGrossDemand is the SATISFIED
+        # (allocated) demand: the sum of the four allocations, m/day per demand cell. It
+        # is reported as totalGrossDemand. irrGrossDemand (satisfied irrigation, m/day
+        # over the whole cell) and nonIrrGrossDemand (satisfied non-irrigation including
+        # livestock) below are also satisfied demands, so the reported "gross demand"
+        # variables cannot show a shortage. The potential demand is
+        # vol_gross_sectoral_water_demands (above); per sector it is reportable only for
+        # domestic, industry, livestock, manufacture and thermoelectric (reporting.py
+        # domesticGrossDemand etc.), not for irrigation.
         self.totalPotentialGrossDemand = (
             self.fossilGroundwaterAlloc
             + self.allocNonFossilGroundwater
@@ -1772,6 +1944,10 @@ class LandSurface(object):
 
         # remaining land cover processes, including applying the allocated irrGrossDemand; every land cover
         # type also needs reducedCapRise (volRenewGroundwaterAbstraction / cellArea)
+        # (sets landSurfaceRunoff, gwRecharge and actualET, which groundwater and
+        # routing read later on the same day; irrigation water that is not consumed
+        # returns to rivers, lakes and reservoirs only through runoff, interflow and
+        # baseflow)
         self.land_surface_hydrology_update(meteo, groundwater, routing, currTimeStep)
 
         # old-style reporting (useful for debugging)

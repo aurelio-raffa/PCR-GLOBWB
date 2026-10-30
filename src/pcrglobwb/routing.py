@@ -14,47 +14,163 @@ logger = logging.getLogger(__name__)
 
 
 class Routing(object):
+    """
+    Surface-water routing of PCR-GLOBWB 2, including the coupling with lakes and
+    reservoirs.
+
+    Water-body overview (annotation for the RAWS reservoir work). Routing owns one
+    WaterBodies object (waterBodies.py, class WaterBodies, held as self.WaterBodies) and
+    does all the bookkeeping between the river channel storage and the lake/reservoir
+    storage. Within one model day (Routing.update, called by pcrglobwb.py after meteo,
+    landSurface and groundwater):
+
+    (1) local fluxes are added to self.channelStorage (m3 per cell) on every cell,
+    water-body cells included: runoff and baseflow, minus surface-water abstraction,
+    plus non-irrigation return flows, minus open-water evaporation;
+
+    (2) at water-body cells the channel storage is moved into the water body (rounded
+    down to whole m3) and WaterBodies.update is called, once per day for accuTravelTime
+    and simplifiedKinematicWave (simple_update), once per sub-step for kinematicWave
+    (kinematic_wave_update). WaterBodies forms the inflow as a storage residual, decides
+    the release (lakes: weir formula; reservoirs: storage-fraction rule,
+    WaterBodies.getReservoirOutflow) and updates its storage;
+
+    (3) the release (m3 per time step) is put back into channelStorage: at the outlet
+    cell (simplifiedKinematicWave), spread over the body's cells (accuTravelTime), or
+    into the cell downstream of the outlet (kinematicWave); then the channel storage is
+    routed;
+
+    (4) after routing, the water-body storage is spread back over the body's cells in
+    proportion to cell area (return_water_body_storage_to_channel), so that between days
+    channelStorage at a water-body cell holds that cell's share of the lake or reservoir
+    storage. The next day's abstraction (readAvlChannelStorage), open-water evaporation
+    and riverbed infiltration therefore act on lake/reservoir water directly, and
+    WaterBodies sees them only through the storage residual.
+
+    Support conventions used in the comments: "per cell" is a value for each grid cell;
+    "per water body" is a value constant over all cells of one water body (built with
+    pcr.areatotal, pcr.areaaverage or pcr.areamaximum over WaterBodies.waterBodyIds);
+    "outlet cell only" is defined at the cell flagged by WaterBodies.waterBodyOut. Tags:
+    INTERFACE marks values exchanged with other modules; CAUTION (N1) to (N5) refer to
+    the 2026-10-29 re-check of the reservoir findings on the RAWS branch, CAUTION (R1),
+    (R2), ... are specific to this file; EXTENSION POINT marks where a new release
+    scheme or a new input to it would be plugged in.
+    """
 
     def getPseudoState(self):
+        """
+        Return the pseudo-states of routing: none (empty dictionary). Kept for the
+        interface of pcrglobwb.py (Model.getPseudoState, Model.getAllState).
+        """
         result = {}
         return result
 
     def getState(self):
+        """
+        Return the routing states needed to restart the model (dictionary of PCRaster
+        maps).
+
+        INTERFACE: called by pcrglobwb.py (Model.getState, Model.getAllState) to dump
+        restart maps, and by Routing.update at the first time step, which passes this
+        dictionary to WaterBodies.getParameterFiles and so to WaterBodies.getICs
+        (waterBodies.py): this is how the initial water-body states read in getICs reach
+        WaterBodies. The keys must match those read back in getICs (memory branch) and
+        in WaterBodies.getICs.
+
+        Water-body related states (all PCRaster maps on the landmask): channelStorage
+        (m3 per cell; at water-body cells the cell's area share of the lake/reservoir
+        storage), waterBodyStorage (m3, per water body, repeated on its cells),
+        avgLakeReservoirOutflowLong and avgLakeReservoirInflowShort (m3/s, per water
+        body), timestepsToAvgDischarge (days, one value for the whole map),
+        readAvlChannelStorage (m3 per cell), avgDischargeLong, m2tDischargeLong and
+        avgDischargeShort (inputs of the environmental flow, i.e. of downstreamDemand),
+        riverbedExchange (m3 per day per cell).
+
+        EXTENSION POINT: a state of a new release scheme (e.g. another running mean kept
+        in WaterBodies) must be added here, read back in getICs (ini-map and memory
+        branches, with a new ini key for cold starts) and read by WaterBodies.getICs,
+        which receives this dictionary at the first time step.
+        """
         result = {}
 
         # hydrology states
         # (day)
+        # number of days already in the running means (days), one value for the whole
+        # map; also passed to WaterBodies.update, where it sets the weights of avgInflow
+        # and avgOutflow
         result["timestepsToAvgDischarge"] = self.timestepsToAvgDischarge
         # channel storage, including lake and reservoir storage (m3)
+        # at water-body cells: the cell's share (by cell area) of the lake/reservoir
+        # storage after the day's release, plus channel water left in the body's cells
+        # after routing, minus the riverbed infiltration (see
+        # return_water_body_storage_to_channel)
         result["channelStorage"] = self.channelStorage
         # readily available channel storage that can be abstracted to satisfy water demand (m3)
+        # INTERFACE: read on the next day by water_management/main_water_management.py
+        # (update, as available_surface_water_volume); not read when using_qualloc is
+        # True
         result["readAvlChannelStorage"] = self.readAvlChannelStorage
+        # avgDischargeLong, m2tDischargeLong and avgDischargeShort feed
+        # estimate_discharge_for_environmental_flow, i.e. downstreamDemand (passed to
+        # WaterBodies.update) and the environmental-flow reduction of
+        # readAvlChannelStorage
         # long-term average discharge (m3/s)
         result["avgDischargeLong"] = self.avgDischarge
         # ((m3/s)^2)
         result["m2tDischargeLong"] = self.m2tDischarge
         # long-term average baseflow (m3/s)
+        # INTERFACE: avgBaseflow is read by water_management/main_water_management.py
+        # (surface-water / groundwater partitioning)
         result["avgBaseflowLong"] = self.avgBaseflow
         # river bed infiltration from surface water bodies to groundwater (m3/day)
+        # INTERFACE: read on the next day by groundwater.py (update_storage, as
+        # surfaceWaterInf); at water-body cells it was taken from the lake/reservoir
+        # storage share
         result["riverbedExchange"] = self.riverbedExchange
         # lake and reservoir storage (m3), per water body id (not per cell)
+        # copy of WaterBodies.waterBodyStorage made in simple_update /
+        # kinematic_wave_update, i.e. the total storage of each water body after
+        # outflow, repeated on each of its cells (not a per-cell share); 0 outside water
+        # bodies after the first update
         result["waterBodyStorage"] = self.waterBodyStorage
         # long-term average lake and reservoir outflow (m3/s), per water body id (not per cell)
+        # self.avgOutflow and self.avgInflow are copies of WaterBodies.avgOutflow and
+        # WaterBodies.avgInflow made in calculate_statistics; the running means used by
+        # the release rule live in WaterBodies. Both are also kept (and updated) outside
+        # water bodies
         result["avgLakeReservoirOutflowLong"] = self.avgOutflow
         # short-term average lake and reservoir inflow (m3/s), per water body id (not per cell)
         result["avgLakeReservoirInflowShort"] = self.avgInflow
         # short-term average discharge (m3/s)
+        # (30-day window; used by estimate_available_volume_for_abstraction)
         result["avgDischargeShort"] = self.avgDischargeShort
         # sub-time step discharge (m3/s), needed for the kinematic wave methods
+        # accuTravelTime: Q / 86400 (m3/s); kinematic methods: discharge of the last
+        # sub-step (m3/s); read by estimate_length_of_sub_time_step at the start of the
+        # next day
         result["subDischarge"] = self.subDischarge
 
         # QUAlloc: long-term water availability
+        # QUAlloc (using_qualloc, see __init__) runs inside landSurface.update, before
+        # routing, and reads routing.discharge (m3/s per cell, previous day; the cell
+        # discharge, not disChanWaterBody), routing.runoff (m/day, previous day) and
+        # routing.channelStorage / cellArea (m, surface-water availability). discharge
+        # and runoff are therefore states, so that the first day after a restart sees
+        # the previous day's values.
+        #
+        # INTERFACE: landSurface.py (update, QUAlloc branch) ->
+        # src/qualloc/qualloc_main.py (update).
         if self.using_qualloc:
             # discharge (m3/s)
             result["discharge"] = self.discharge
             # total runoff (m/day)
             result["runoff"] = self.runoff
 
+            # with quality also True, the DynQual concentrations are handed to QUAlloc
+            # (landSurface.py), where they can restrict surface-water withdrawals
+            # through QUAlloc's suitability per sector (src/qualloc/water_management.py,
+            # update_surfacewater_potential_withdrawals), hence also withdrawals at
+            # reservoir cells
             if self.quality:
                 # TDS concentration (mg/L)
                 result["salinity"] = self.salinity
@@ -63,6 +179,8 @@ class Routing(object):
                 # FC concentration (cfu/100mL)
                 result["pathogen"] = self.pathogen
 
+        # the DynQual states below are water-quality variables only; none is read by the
+        # water-body quantity path
         # DynQual: irrigation return flows
         if self.quality:
             # average irrigation gross demand (m/day)
@@ -127,6 +245,26 @@ class Routing(object):
         return result
 
     def __init__(self, iniItems, initialConditions, lddMap):
+        """
+        Read the routing options, create the WaterBodies object and read the initial
+        conditions.
+
+        Water-body relevant settings read here (routingOptions unless stated):
+        routingMethod (selects the daily sequence, see update), includeWaterBodies, the
+        averaging windows (1825 and 30 days, hard-coded), cropCoefficientWaterNC and
+        minCropWaterKC (open-water evaporation), dynamicFloodPlain and the channel
+        geometry (they set dynamicFracWat, hence open-water evaporation and riverbed
+        infiltration at water-body cells), maxiumLengthOfSubTimeStep (sub-steps of the
+        kinematic methods), upstream_discharge_input_files, quality (DynQual),
+        WWtPlantsNC (return flows) and using_qualloc (waterManagementOptions).
+        Lake/reservoir specific keys (waterBodyInputNC or the per-year map keys,
+        onlyNaturalWaterBodies, minResvrFrac, maxResvrFrac) are read by
+        WaterBodies.__init__ (waterBodies.py). Initial states are read in getICs.
+
+        Arguments: iniItems (configuration.Configuration), initialConditions (dictionary
+        of states from memory, e.g. after a spin-up, or None to read the ini maps),
+        lddMap (not used: self.lddMap is read again from routingOptions lddMap below).
+        """
         object.__init__(self)
 
         self.lddMap = lddMap
@@ -135,13 +273,33 @@ class Routing(object):
         self.inputDir = iniItems.globalOptions["inputDir"]
 
         # option to activate the water balance check
+        # also switches the balance checks around the WaterBodies.update call in
+        # simple_update and kinematic_wave_update; WaterBodies reads the same key
+        # itself. True in all RAWS configurations (log messages only, no effect on the
+        # results)
         self.debugWaterBalance = True
         if iniItems.routingOptions["debugWaterBalance"] == "False":
             self.debugWaterBalance = False
 
+        # routingMethod: "accuTravelTime", "simplifiedKinematicWave" or "kinematicWave"
+        # (default "accuTravelTime", set by configuration.py, repair_ini_key_names, if
+        # the key is missing). It decides how often WaterBodies.update is called and
+        # where the release enters the channel (see update). RAWS configurations:
+        # pcrglobwb_5arcminutes.ini and online_pcrglobwb_qualloc_5arcminutes.ini use
+        # simplifiedKinematicWave; pcrglobwb_30arcminutes.ini,
+        # pcrglobwb_30arcseconds.ini and online_pcrglobwb_qualloc_30arcseconds.ini use
+        # accuTravelTime; none uses kinematicWave. Any other value is not caught here;
+        # update would then run neither branch and fail later (self.Q undefined).
         self.method = iniItems.routingOptions["routingMethod"]
 
         # option to include lakes and reservoirs
+        # includeWaterBodies (default True; "False" or "None" switch it off; True in all
+        # RAWS configurations). Used only in update, where waterBodyIds is replaced by
+        # -1 everywhere.
+        #
+        # CAUTION (R6): only the ids are removed: WaterBodies.fracWat still enters
+        # dynamicFracWat (open-water evaporation, riverbed infiltration), waterBodyOut
+        # is kept, and WaterBodies.update still runs every day with zero storage.
         self.includeWaterBodies = True
         if "includeWaterBodies" in list(iniItems.routingOptions.keys()):
             if (
@@ -186,6 +344,9 @@ class Routing(object):
         self.lddMap = pcr.lddmask(self.lddMap, self.landmask)
 
         # cell area (m2)
+        # cellArea (m2 per cell): converts every m/day flux into m3, and is the weight
+        # used to spread a water body's storage over its cells
+        # (return_water_body_storage_to_channel)
         self.cellArea = vos.readPCRmapClone(
             iniItems.routingOptions["cellAreaMap"],
             self.tmpDir,
@@ -201,6 +362,15 @@ class Routing(object):
         # maximum number of time steps for short-term average values (default: 1 month = 30 days)
         self.maxTimestepsToAvgDischargeShort = 30.0
 
+        # The two windows above are passed to WaterBodies.update:
+        # maxTimestepsToAvgDischargeShort is the window (days) of WaterBodies.avgInflow
+        # (and of avgDischargeShort here), maxTimestepsToAvgDischargeLong that of
+        # WaterBodies.avgOutflow (and of avgDischarge, m2tDischarge and avgBaseflow
+        # here). They are not configurable.
+        #
+        # EXTENSION POINT: a release scheme that needs other windows (e.g. a 7-day
+        # inflow mean) must keep its own running mean in WaterBodies, with its own state
+        # in getState / getICs.
         routingParameters = ["gradient", "manningsN"]
         for var in routingParameters:
             input = iniItems.routingOptions[str(var)]
@@ -291,9 +461,26 @@ class Routing(object):
         minGradient = 0.00005
         self.gradient = pcr.max(minGradient, pcr.cover(self.gradient, minGradient))
 
+        # INTERFACE: waterBodies.py, WaterBodies.__init__(iniItems, landmask). It reads
+        # the lake/reservoir options from routingOptions (waterBodyInputNC or the
+        # per-year map keys, onlyNaturalWaterBodies, minResvrFrac, maxResvrFrac,
+        # debugWaterBalance) and its own lddMap. The water-body maps (fracWat,
+        # waterBodyIds, waterBodyOut, waterBodyArea, waterBodyTyp, waterBodyCap) only
+        # exist after WaterBodies.getParameterFiles, called from update at the first
+        # time step and on 1 January.
+        #
+        # EXTENSION POINT: options of a new release scheme (e.g. a scheme selector, or
+        # the path to trained parameters per reservoir) can be read in
+        # WaterBodies.__init__ from the same iniItems.routingOptions; nothing needs to
+        # change here.
         self.WaterBodies = waterBodies.WaterBodies(iniItems, self.landmask)
 
         # crop evaporation coefficient of surface water bodies
+        # cropCoefficientWaterNC: monthly open-water crop coefficient kc (-), netCDF
+        # variable "kc", read in calculate_potential_evaporation. If "None", kc = 0 and
+        # no open-water evaporation is taken from channels, lakes or reservoirs. All
+        # RAWS configurations set it (30arcminutes/routing/kc_open_water.nc, also for
+        # the 5 arcmin and 30 arcsec runs).
         self.no_zero_crop_water_coefficient = True
         if iniItems.routingOptions["cropCoefficientWaterNC"] == "None":
             self.no_zero_crop_water_coefficient = False
@@ -302,6 +489,14 @@ class Routing(object):
                 iniItems.routingOptions["cropCoefficientWaterNC"], self.inputDir
             )
 
+        # Sub-time steps (kinematic methods only; accuTravelTime routes in one daily
+        # step). limit_num_of_sub_time_steps (integer) is the minimum number of
+        # sub-steps per day: at least 24, at least 86400 / (0.5 * minimum channelLength
+        # / 5 m/s), and at least ceil(86400 / maxiumLengthOfSubTimeStep). The RAWS 5
+        # arcmin configurations set maxiumLengthOfSubTimeStep = 720 (s), hence at least
+        # 120 sub-steps. Under simplifiedKinematicWave the sub-steps route channel water
+        # only and WaterBodies.update is still called once per day (simple_update);
+        # under kinematicWave it is called at every sub-step (kinematic_wave_update).
         # Courant number criterion for numerical stability in the kinematic wave methods
         self.courantNumber = 0.50
 
@@ -337,15 +532,29 @@ class Routing(object):
         # as in Van Beek et al. (2011)
 
         # minimum fracWat used to calculate the water height (-)
+        # min_fracwat_for_water_height (-): floor of the water fraction when a water
+        # height (m) is computed as storage / (fraction * cellArea); max_water_height
+        # (m): cap of that height in simplifiedKinematicWave
         self.min_fracwat_for_water_height = 0.001
         self.max_water_height = 50000000
 
         # minimum crop coefficient of surface water bodies
+        # minCropWaterKC (default 0.0): lower bound of kc. The RAWS configurations set
+        # 1.00, so kc >= 1 and the open-water potential evaporation is at least the
+        # reference ET0.
         self.minCropWaterKC = 0.00
         if "minCropWaterKC" in list(iniItems.routingOptions.keys()):
             self.minCropWaterKC = float(iniItems.routingOptions["minCropWaterKC"])
 
         # floodplain options
+        # dynamicFloodPlain (default "False", set by configuration.py if missing; True
+        # in all RAWS configurations). For water bodies: (i) in update, the inundated
+        # fraction derived from channelStorage enters dynamicFracWat; at water-body
+        # cells channelStorage holds the cell's share of the lake/reservoir storage, so
+        # the floodplain profile of the cell, not the geometry of the reservoir, sets
+        # the evaporating fraction above fracWat (CAUTION R8, in update); (ii) under
+        # simplifiedKinematicWave, alpha and the initial discharge come from kinAlpha
+        # (floodplain Manning), also at the body's cells.
         self.floodPlain = iniItems.routingOptions["dynamicFloodPlain"] == "True"
         if self.floodPlain:
 
@@ -374,6 +583,12 @@ class Routing(object):
             ) = self.getElevationProfile(iniItems)
 
             # bankfull capacity (m3)
+            # River bankfull capacity (m3 per cell). With bankfullCapacity = None and
+            # both constantChannelWidth and constantChannelDepth given (RAWS 5 arcmin
+            # configurations) it is fixed from those maps (estimateBankfullCapacity).
+            # Storage above it is floodplain water
+            # (returnInundationFractionAndFloodDepth, kinAlpha), also at water-body
+            # cells.
             self.predefinedBankfullCapacity = None
             self.usingFixedBankfullCapacity = False
             if iniItems.routingOptions["bankfullCapacity"] != "None":
@@ -415,6 +630,11 @@ class Routing(object):
             )
 
         # input file for upstream discharge (from upstream basins)
+        # upstream_discharge_input_files (comma-separated list; not set in any RAWS
+        # configuration): discharge (m3/s) from other sub-runs, added in simple_update
+        # to the channel storage of the first cell inside the landmask, before
+        # WaterBodies.update. If that cell is a water-body cell, the volume becomes part
+        # of the same day's inflow residual. Ignored by kinematic_wave_update.
         self.upstream_discharge_input_files = None
         if (
             "upstream_discharge_input_files" in list(iniItems.routingOptions.keys())
@@ -425,6 +645,15 @@ class Routing(object):
             ].split(",")
 
         # DynQual
+        # quality (DynQual: water temperature, salinity, organic and pathogen
+        # pollution). True only in online_pcrglobwb_qualloc_5arcminutes.ini among the
+        # RAWS configurations. DynQual reads water-body quantities
+        # (WaterBodies.waterBodyOutflow, waterBodyIds, waterBodyOut,
+        # self.waterBodyStorageTimeBefore, channelStorage copies) but writes back to
+        # none of channelStorage, waterBodyStorage or the WaterBodies attributes; it
+        # only overwrites the reported self.waterBodyEvaporation on freezing days
+        # (qualityLocal, CAUTION R13). Through QUAlloc it can change withdrawals (see
+        # getState).
         self.quality = False
         if (
             "quality" in iniItems.routingOptions.keys()
@@ -435,6 +664,13 @@ class Routing(object):
         else:
             logger.info("Water quality modelling not initiated.")
 
+        # WWtPlantsNC: wastewater-treatment-plant ids and service zones. The presence of
+        # the key alone switches the option on (a value of "None" is not handled). When
+        # on, simple_update moves domestic and manufacturing return flows to the plant
+        # cells (return_flows_to_wastewater_treatment_plants), which moves local input
+        # into or out of water-body cells. Set in both RAWS 5 arcmin configurations and
+        # in online_pcrglobwb_qualloc_30arcseconds.ini (which points to the 5 arcmin
+        # file). Not used by kinematic_wave_update.
         self.WWtPlants = False
         if "WWtPlantsNC" in list(iniItems.routingOptions.keys()):
             self.WWtPlants = True
@@ -781,6 +1017,24 @@ class Routing(object):
             self.calculateLoads = False
             self.loadsPerSector = False
 
+        # using_qualloc (waterManagementOptions): QUAlloc does the water allocation
+        # instead of water_management/main_water_management.py (landSurface.py, update).
+        # Effects on routing and water bodies: (i) extra states discharge and runoff
+        # (getState, getICs), because QUAlloc reads them before routing runs; (ii)
+        # QUAlloc takes the surface-water availability as routing.channelStorage /
+        # cellArea, i.e. the whole channel storage, including the lake/reservoir share
+        # at water-body cells, without the environmental-flow reduction, the 90 percent
+        # cap and the 0.1 m3 rounding of estimate_available_volume_for_abstraction, and
+        # withdraws min(potential, available) (src/qualloc/qualloc_main.py, update);
+        # (iii) readAvlChannelStorage is still computed and saved but has no reader.
+        # Routing subtracts landSurface.actSurfaceWaterAbstract in the same way in both
+        # cases. True in online_pcrglobwb_qualloc_5arcminutes.ini and
+        # online_pcrglobwb_qualloc_30arcseconds.ini.
+        #
+        # CAUTION (R12): with QUAlloc, one day's withdrawals at a water-body cell can
+        # take up to the whole storage share of that cell (not 90 percent), and, as in
+        # the standard path, the reservoir's lower limit minResvrFrac is not known to
+        # the allocation (K2 of the gross-vs-net live log).
         self.using_qualloc = False
         if (
             "using_qualloc" in iniItems.waterManagementOptions
@@ -788,12 +1042,37 @@ class Routing(object):
         ):
             self.using_qualloc = True
 
+        # initial conditions, including the staged water-body states avgInflow,
+        # avgOutflow and waterBodyStorage (handed to WaterBodies at the first update)
         self.getICs(iniItems, initialConditions)
 
         # old-style reporting (useful for debugging)
+        # inactive in all RAWS configurations (no out* keys in routingOptions)
         self.initiate_old_style_routing_reporting(iniItems)
 
     def getICs(self, iniItems, iniConditions=None):
+        """
+        Read the routing initial conditions, from the ini maps (iniConditions None) or
+        from memory (iniConditions["routing"], from a spin-up or a previous getState).
+
+        Water-body related states and their ini keys (routingOptions):
+        avgLakeReservoirInflowShortIni -> self.avgInflow (m3/s),
+        avgLakeReservoirOutflowLongIni -> self.avgOutflow (m3/s), waterBodyStorageIni ->
+        self.waterBodyStorage (m3), channelStorageIni, readAvlChannelStorageIni,
+        avgDischargeLongIni, avgDischargeShortIni, m2tDischargeLongIni,
+        riverbedExchangeIni, timestepsToAvgDischargeIni. The three water-body states are
+        only staged here: WaterBodies receives them at the first time step (update ->
+        getState -> WaterBodies.getParameterFiles -> WaterBodies.getICs, waterBodies.py)
+        and from then on keeps its own copies.
+
+        All RAWS configurations cold-start every one of these with the scalar 0.001 and
+        set maxSpinUpsInYears = 0, so lakes and reservoirs start nearly empty with
+        avgOutflow = 0.001 m3/s on every cell.
+
+        CAUTION (N4): the new-reservoir fallback of WaterBodies.getReservoirOutflow
+        applies only where avgOutflow == 0 exactly, so it never fires after this
+        initialisation; the base release starts near zero and builds up from spills.
+        """
 
         if iniConditions is None:
             logger.info(
@@ -852,6 +1131,9 @@ class Routing(object):
             )
 
             # initial conditions needed for coupling with QUAlloc
+            # dischargeIni (m3/s) and runoffIni (m/day) are required when using_qualloc
+            # is True (KeyError otherwise); online_pcrglobwb_qualloc_5arcminutes.ini
+            # sets both to 0.001. They feed QUAlloc on the first day only.
             if self.using_qualloc:
                 self.discharge = vos.readPCRmapClone(
                     iniItems.routingOptions["dischargeIni"],
@@ -1021,6 +1303,7 @@ class Routing(object):
             self.subDischarge = iniConditions["routing"]["subDischarge"]
 
             # initial conditions needed for coupling with QUAlloc
+            # QUAlloc states from memory (same meaning as above)
             if self.using_qualloc:
                 self.discharge = iniConditions["routing"]["discharge"]
                 self.runoff = iniConditions["routing"]["runoff"]
@@ -1086,12 +1369,14 @@ class Routing(object):
         )
         self.subDischarge = pcr.ifthen(self.landmask, pcr.cover(self.subDischarge, 0.0))
 
+        # readAvlChannelStorage (m3 per cell): non-negative and at most channelStorage
         self.readAvlChannelStorage = pcr.min(
             self.readAvlChannelStorage, self.channelStorage
         )
         self.readAvlChannelStorage = pcr.max(self.readAvlChannelStorage, 0.0)
 
         # QUAlloc
+        # QUAlloc states restricted to the landmask, missing values set to 0
         if self.using_qualloc:
             self.discharge = pcr.ifthen(self.landmask, pcr.cover(self.discharge, 0.0))
             self.runoff = pcr.ifthen(self.landmask, pcr.cover(self.runoff, 0.0))
@@ -1180,6 +1465,9 @@ class Routing(object):
                     )
 
         # make sure timestepsToAvgDischarge is the same for the entire map
+        # timestepsToAvgDischarge (days): 0.001 in the RAWS cold starts, so the first
+        # update uses a weight of about 1 and the running means start at the first day's
+        # values
         try:
             self.timestepsToAvgDischarge = pcr.mapmaximum(self.timestepsToAvgDischarge)
         except Exception:
@@ -1195,6 +1483,9 @@ class Routing(object):
         )
 
         # initial conditions of water bodies: short-term average inflow (m3/s) and long-term average outflow (m3/s)
+        # (m3/s and m3; maps on every landmask cell, water-body values repeated on the
+        # body's cells. INTERFACE: they reach WaterBodies.getICs, waterBodies.py, at the
+        # first time step through update and getState.)
         if iniConditions is None:
             # read the initial conditions from the PCRaster maps in the ini file (at the start of the model)
             self.avgInflow = vos.readPCRmapClone(
@@ -1207,6 +1498,14 @@ class Routing(object):
                 self.tmpDir,
                 self.inputDir,
             )
+            # CAUTION (R5): routingOptions values are strings, so this test is always
+            # true when the key exists. With waterBodyStorageIni = None,
+            # readPCRmapClone("None") returns None (common/virtualOS.py,
+            # singleTryReadPCRmapClone) and the next statement passes None to pcr.cover,
+            # which is expected to fail (not run). The memory branch never passes None
+            # either (getState always returns a map), so the fallback of
+            # WaterBodies.getICs that derives the storage from channelStorage is not
+            # reachable in practice.
             if iniItems.routingOptions["waterBodyStorageIni"] is not None:
                 self.waterBodyStorage = vos.readPCRmapClone(
                     iniItems.routingOptions["waterBodyStorageIni"],
@@ -1224,6 +1523,10 @@ class Routing(object):
             self.avgOutflow = iniConditions["routing"]["avgLakeReservoirOutflowLong"]
             self.waterBodyStorage = iniConditions["routing"]["waterBodyStorage"]
 
+        # CAUTION (N4): outside water bodies these maps keep their initial value (0.001
+        # in the RAWS cold starts) and WaterBodies keeps updating them on every landmask
+        # cell, so a reservoir that appears later (yearly maps) inherits a small
+        # positive avgOutflow and the new-reservoir fallback does not fire
         self.avgInflow = pcr.ifthen(self.landmask, pcr.cover(self.avgInflow, 0.0))
         self.avgOutflow = pcr.ifthen(self.landmask, pcr.cover(self.avgOutflow, 0.0))
         if self.waterBodyStorage is not None:
@@ -1368,6 +1671,21 @@ class Routing(object):
         return nrZLevels, areaFractions, relZ, floodVolume, kSlope, mInterval
 
     def getRoutingParamAvgDischarge(self, avgDischarge, dist2celllength):
+        """
+        Channel dimensions from the long-term average discharge avgDischarge (m3/s per
+        cell): yMean (m, average flow depth), wMean (m, average flow width, replaced by
+        constantChannelWidth where given, at least minimumChannelWidth), and a
+        characteristic distance (arc-degrees per day).
+
+        Water bodies: avgDischarge at water-body cells is the running mean of the
+        body-maximum discharge (calculate_statistics uses disChanWaterBody), so the
+        channel width and depth there are those of the river at the body's largest
+        discharge.
+
+        CAUTION: the characteristicDistance returned here (with a 1.5-cell extension at
+        water bodies) is stored by update as self.characteristicDistance and read
+        nowhere; accuTravelTime uses getCharacteristicDistance (2.5 cells) instead.
+        """
         # routing parameters from the long-term average discharge (m3/s); output: channel dimensions and
         # characteristicDistance (input of accuTravelTime)
 
@@ -1409,6 +1727,8 @@ class Routing(object):
         )
 
         # make sure all outflow is released outside lakes and reservoirs
+        # CAUTION: the result of this method is not used for routing (see the
+        # docstring); the rule that is applied is the one in getCharacteristicDistance
         outlets = pcr.cover(
             pcr.ifthen(pcr.scalar(self.WaterBodies.waterBodyOut) > 0, pcr.boolean(1)),
             pcr.boolean(0),
@@ -1441,6 +1761,18 @@ class Routing(object):
         return (yMean, wMean, characteristicDistance)
 
     def getCharacteristicDistance(self, yMean, wMean):
+        """
+        Characteristic distance (arc-degrees per day) of the accuTravelTime routing: the
+        distance water travels in one day, Manning velocity (m/day) / dist2celllength.
+
+        Water bodies: all cells of a water body get one value (pcr.areamaximum over
+        waterBodyIds), at least the ldd distance (arc-degrees) from the cell to the
+        body's outlet plus 2.5 downstream cell lengths, so that water placed in the
+        body's cells (the release, spread over the body by simple_update) passes the
+        outlet within the day. Used only by accuTravelTime (RAWS 30 arcmin and 30 arcsec
+        configurations). See CAUTION (R7) in accuTravelTime for upstream water that
+        reaches the body during routing.
+        """
 
         # Manning's coefficient
         usedManningsN = self.manningsN
@@ -1495,11 +1827,15 @@ class Routing(object):
         )
 
         # characteristicDistance of each lake/reservoir
+        # first estimate per water body: the mean of its cells' values (arc-degrees per
+        # day)
         lakeReservoirCharacteristicDistance = pcr.ifthen(
             pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0,
             pcr.areaaverage(characteristicDistance, self.WaterBodies.waterBodyIds),
         )
         # make sure all outflow is released outside lakes and reservoirs
+        # outlets: boolean map, True at WaterBodies.waterBodyOut; distance_to_outlets
+        # (arc-degrees, along the ldd) from each water-body cell to its outlet
         outlets = pcr.cover(
             pcr.ifthen(
                 pcr.scalar(self.WaterBodies.waterBodyOut) > 0,
@@ -1512,6 +1848,8 @@ class Routing(object):
             pcr.ldddist(self.lddMap, outlets, pcr.scalar(1.0)),
         )
 
+        # at least the distance to the outlet plus 2.5 downstream cell lengths
+        # (pcr.downstreamdist, arc-degrees), then one value per body (its maximum)
         lakeReservoirCharacteristicDistance = pcr.ifthen(
             pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0,
             pcr.max(
@@ -1548,6 +1886,26 @@ class Routing(object):
         return characteristicDistance
 
     def accuTravelTime(self):
+        """
+        Route channelStorage (m3 per cell) in one daily step with PCRaster
+        accutraveltimeflux / accutraveltimestate, using the characteristic distance of
+        getCharacteristicDistance (arc-degrees per day).
+
+        Sets self.Q (m3/day per cell), self.channelStorage (m3, after routing) and
+        self.subDischarge = Q / 86400 (m3/s). Negative storage and the fraction below 1
+        m3 of each cell are not routed (channelStorageThatWillNotMove). Water bodies:
+        called after WaterBodies.update and after the release has been spread over the
+        body's cells (simple_update); the body's characteristic distance (at least the
+        distance to the outlet plus 2.5 cells) carries the release past the outlet
+        within the day.
+
+        CAUTION (R7): upstream river water that reaches a body cell during this routing
+        travels on with the same large characteristic distance, so it can pass the
+        outlet within the day without ever entering WaterBodies.waterBodyStorage: it is
+        neither inflow nor release of the water body (K1 of the gross-vs-net live log;
+        by code reading, not verified with a run). Used by the RAWS 30 arcmin and 30
+        arcsec configurations.
+        """
 
         # accuTravelTime routing
 
@@ -1599,6 +1957,19 @@ class Routing(object):
         self.subDischarge = pcr.ifthen(self.landmask, self.subDischarge)
 
     def estimate_length_of_sub_time_step(self):
+        """
+        Length (s) and number of the sub-steps of the kinematic methods for the whole
+        day.
+
+        From the previous sub-step discharge self.subDischarge (m3/s), self.water_height
+        (m) and self.dynamicFracWat: the shortest residence time of the cells with a
+        water height above critical_water_height (0.25 m, excluding pits) gives the
+        number of sub-steps, times 1.25 plus 1, at least limit_num_of_sub_time_steps
+        (see __init__). One value for the whole map. Water bodies: under
+        simplifiedKinematicWave the body's storage has already been moved into
+        WaterBodies when this is called; under kinematicWave it has not (the body's
+        storage share is still in the channel storage of its cells).
+        """
 
         # sub-time step length (s), the shorter the better, estimated from the initial or latest
         # sub-time step discharge (m3/s)
@@ -1638,6 +2009,19 @@ class Routing(object):
         The 'simplifiedKinematicWave':
         1. First, assume that all local fluxes has been added to 'channelStorage'. This is done outside of this function/method.
         2. Then, the 'channelStorage' is routed by using 'pcr.kinematic function' with 'lateral_inflow' = 0.0.
+
+        Annotation (water bodies). Called by simple_update after WaterBodies.update and
+        after the day's release has been added to channelStorage at the outlet cell
+        only. The body's own storage is not in channelStorage at this point (it was
+        moved into WaterBodies), so the body's cells hold only remainders below 1 m3,
+        the release (outlet cell) and whatever arrives from upstream during the day;
+        they are routed like river cells. The sub-step loop routes channel water only
+        and never calls WaterBodies.update (the release rule runs once per day). Sets
+        self.Q (m3/day per cell, sum over the sub-steps), self.subDischarge (m3/s, last
+        sub-step), self.channelStorage (m3), and self.dynamicFracWat and
+        self.water_height (values of the last sub-step); with quality, runs
+        qualityRouting at every sub-step (water quality only). The arguments meteo,
+        landSurface and groundwater are not used. See CAUTION (R2) and (R3) in the loop.
         """
 
         logger.info("Using the simplifiedKinematicWave method!")
@@ -1652,6 +2036,7 @@ class Routing(object):
 
         # water height (m), needed to estimate the sub-time step length and the channel wetted area (for
         # alpha and dischargeInitial)
+        # (start of the day; used here only to estimate the number of sub-steps)
         self.water_height = pcr.min(
             self.max_water_height,
             channelStorageForRouting
@@ -1669,6 +2054,13 @@ class Routing(object):
         for i_loop in range(number_of_loops):
 
             # alpha parameter and initial discharge for the kinematic wave
+            # floodplain on (all RAWS configurations): kinAlpha returns (flooded
+            # fraction including the channel fraction (-), flood depth above the
+            # floodplain (m), alpha, initial discharge (m3/s)); the first two are stored
+            # as self.dynamicFracWat and self.water_height, so inside the loop
+            # water_height is the flood depth, not storage / (fraction * cellArea).
+            # kinAlpha also overwrites self.channelFraction. The fraction is floored at
+            # WaterBodies.fracWat (water-body cells) and capped at 1.
             if self.floodPlain:
                 self.dynamicFracWat, self.water_height, alpha, dischargeInitial = (
                     self.kinAlpha(channelStorageForRouting)
@@ -1688,6 +2080,32 @@ class Routing(object):
                 )
 
             # at the lake/reservoir outlets, use the water body outflow
+            # CAUTION: the water-body outflow is used only as the initial (old)
+            # discharge of each sub-step, see (R2) and (R3) below.
+            #
+            # WaterBodies.waterBodyOutflow is the release in m3 per day (time step of
+            # 86400 s); at the outlet cell it is converted to m3/s; the other body cells
+            # get 0, cells outside water bodies keep the kinematic-wave estimate.
+            #
+            # CAUTION (R2): pcr.kinematic computes the new discharge of each cell from
+            # this old value and the new discharge arriving from its upstream cells.
+            # Water arriving from upstream during the day therefore flows through the
+            # body's cells and past the outlet without entering
+            # WaterBodies.waterBodyStorage: it is counted neither as inflow nor as
+            # release of the water body, and the rule cannot hold it back (bypass).
+            #
+            # CAUTION (R3): the release is not enforced either. With little upstream
+            # inflow the new discharge at the outlet is below the old one
+            # (kinematic-wave recession), so part of the release can remain in the
+            # outlet cell at the end of the day; with upstream water passing through,
+            # the outlet discharge can exceed the release.
+            # return_water_body_storage_to_channel then merges what is left in the
+            # body's cells into the water-body storage, and WaterBodies counts it as
+            # inflow the next day. The magnitudes are not determined from the code (a
+            # run is needed). Consequence for a replacement release scheme: the volume
+            # leaving the body differs from the decided release, and the decision
+            # signals (storage, avgInflow) include undeparted release and miss bypassed
+            # inflow.
             waterBodyOutflowInM3PerSec = (
                 pcr.cover(
                     pcr.ifthen(
@@ -1704,6 +2122,8 @@ class Routing(object):
             dischargeInitial = pcr.cover(waterBodyOutflowInM3PerSec, dischargeInitial)
 
             # discharge (m3/s) from the kinematic wave approximation
+            # new discharge of the sub-step (m3/s per cell), lateral inflow 0, one time
+            # slice
             self.subDischarge = pcr.kinematic(
                 self.lddMap,
                 dischargeInitial,
@@ -1718,6 +2138,8 @@ class Routing(object):
             self.subDischarge = pcr.max(0.0, pcr.cover(self.subDischarge, 0.0))
 
             # avoid negative channel storage
+            # outflow volume of a cell in one sub-step limited to its storage plus the
+            # inflow from upstream in the same sub-step (m3), converted back to m3/s
             self.subDischarge = (
                 pcr.min(
                     self.subDischarge * length_of_sub_time_step,
@@ -1745,6 +2167,11 @@ class Routing(object):
             channelStorageForRouting = pcr.max(0.000, channelStorageForRouting)
 
             # update the flood fraction and flood depth (without floodplain)
+            # CAUTION (R9): returnInundationFractionAndFloodDepth is stored in
+            # self.inundatedFraction (one n), while dynamicFracWat below reads
+            # self.innundatedFraction (two n), the start-of-day value from update: the
+            # inundated fraction is not updated within the loop. Same on master. Not
+            # active in the RAWS configurations (dynamicFloodPlain = True).
             if not self.floodPlain:
                 self.inundatedFraction, self.floodDepth = (
                     self.returnInundationFractionAndFloodDepth(channelStorageForRouting)
@@ -1781,17 +2208,24 @@ class Routing(object):
                 )
 
             # total discharge volume (m3) until this loop
+            # discharge_volume (m3 per cell): sum of the sub-step outflow volumes; at
+            # the outlet cell this is the volume that actually left the water body that
+            # day (release plus any pass-through, see R2 and R3)
             if i_loop == 0:
                 discharge_volume = pcr.scalar(0.0)
             discharge_volume += self.subDischarge * length_of_sub_time_step
 
             # quality routing
+            # DynQual: water-quality routing per sub-step on a copy of the storage
+            # (channelStorageNow); channelStorageForRouting and subDischarge are not
+            # changed
             if self.quality:
                 self.channelStorageNow = pcr.max(0.0, channelStorageForRouting)
                 self.qualityRouting(length_of_sub_time_step)
                 self.channelStorageTimeBefore = pcr.max(0.0, self.channelStorageNow)
 
         # channel discharge (m3/day)
+        # (INTERFACE: Q / 86400 is self.discharge in simple_update)
         self.Q = discharge_volume
 
         # update channelStorage after routing
@@ -1801,14 +2235,44 @@ class Routing(object):
         self.channelStorage += channelStorageThatWillNotMove
 
         # channel storage cannot be negative
+        # (clipping creates water where storage was negative; not on master)
         self.channelStorage = pcr.max(0.0, self.channelStorage)
 
     def update(self, landSurface, groundwater, currTimeStep, meteo):
+        """
+        Daily routing step.
+
+        INTERFACE: called by pcrglobwb.py (Model.update) after meteo.update,
+        landSurface.update and groundwater.update of the same day.
+
+        Water-body sequence: (1) water-body maps from WaterBodies.getParameterFiles at
+        the first time step (with the initial states from getState) and on 1 January;
+        (2) downstreamDemand from the previous day's discharge statistics; (3) channel
+        geometry and the start-of-day water fraction dynamicFracWat (used for open-water
+        evaporation); (4) the method-specific update, which contains the
+        WaterBodies.update call(s): simple_update (accuTravelTime,
+        simplifiedKinematicWave; once per day) or kinematic_wave_update (kinematicWave;
+        once per sub-step); (5) riverbed infiltration, readAvlChannelStorage for the
+        next day, and the discharge statistics (calculate_statistics).
+
+        Inputs used: landSurface (landSurfaceRunoff, actSurfaceWaterAbstract, return
+        flows, actualET), groundwater (baseflow, riverBedConductivity, abstractions),
+        meteo (referencePotET), currTimeStep (timeStepPCR, doy, day, fulldate).
+        """
 
         logger.info("routing in progress")
 
         # water bodies: get the parameters at the start of each year or simulation; this must be called first
         # to define the initial conditions at the start of the simulation
+        # INTERFACE: waterBodies.py, WaterBodies.getParameterFiles(currTimeStep,
+        # cellArea, ldd, initial_condition_dictionary). At the first time step it also
+        # receives getState() (the staged avgInflow, avgOutflow, waterBodyStorage and
+        # channelStorage) and calls WaterBodies.getICs. It (re)builds, from
+        # waterBodyInputNC (yearly slices): fracWat (-, per cell), waterBodyIds
+        # (nominal, per body), waterBodyOut (boolean, the cell with the largest upstream
+        # area), waterBodyArea (m2), waterBodyTyp (1 lake, 2 reservoir) and waterBodyCap
+        # (m3), the last three per body on its cells. landSurface.py also reads
+        # WaterBodies.fracWat (capillary rise) and sets it itself on the first day.
         if currTimeStep.timeStepPCR == 1:
             initial_conditions_for_water_bodies = self.getState()
             # the last argument is for the initial conditions of lakes/reservoirs
@@ -1819,25 +2283,59 @@ class Routing(object):
                 initial_conditions_for_water_bodies,
             )
 
+        # yearly reload on 1 January (a new year may add reservoirs or change extents).
+        # CAUTION (R18): WaterBodies keeps its storage and running means per cell across
+        # the reload: a new reservoir starts with storage 0 and the small positive
+        # avgOutflow its cells carried (N4); the river water already on newly added body
+        # cells counts as inflow on the first day; cells that leave a body keep their
+        # storage share in channelStorage, as river water. For a body whose extent
+        # changed, WaterBodies' storage differs between its old and new cells at the
+        # first update, so its inflow and avgInflow (30-day window) differ per cell, and
+        # so can the release, which triggers R1. How often the extents change in the
+        # input file is not determined from the code.
         if (currTimeStep.doy == 1) and (currTimeStep.timeStepPCR > 1):
             self.WaterBodies.getParameterFiles(currTimeStep, self.cellArea, self.lddMap)
+        # CAUTION (R6): only waterBodyIds is replaced (see __init__)
         if not self.includeWaterBodies:
             # ignore all lakes and reservoirs
             self.WaterBodies.waterBodyIds = pcr.ifthen(self.landmask, pcr.nominal(-1))
 
         # downstream demand (m3/s) for reservoirs, estimated from the environmental flow discharge; must be
         # called before updating timestepsToAvgDischarge
+        # INTERFACE: passed to WaterBodies.update (simple_update,
+        # kinematic_wave_update). downstreamDemand (m3/s per cell) = max(0.1 *
+        # avgDischarge, avgDischarge - 1.2816 * std), from the previous day's
+        # statistics: an environmental-flow discharge of the cell itself, not a
+        # downstream withdrawal demand. At water-body cells it is computed from the
+        # statistics of the body-maximum discharge; WaterBodies uses it per cell and the
+        # outlet value is the one that reaches the channel (R1).
+        #
+        # CAUTION (N2): its floor on the reservoir release is negligible as
+        # WaterBodies.getReservoirOutflow is written.
+        #
+        # CAUTION (R4): the std estimate grows with run length, so the value tends to
+        # 0.1 * avgDischarge.
+        #
+        # EXTENSION POINT: a demand-aware scheme can receive a real downstream demand
+        # signal here instead (e.g. the surface-water demand of the cells downstream of
+        # each outlet, summed per body), with the same units (m3/s) and support (per
+        # body on its cells).
         self.downstreamDemand = self.estimate_discharge_for_environmental_flow(
             self.channelStorage
         )
 
         # routing/channel parameters (based on avgDischarge) and water body fraction, needed for the
         # evaporation from water bodies
+        # (self.characteristicDistance is not used: accuTravelTime calls
+        # getCharacteristicDistance)
         self.yMean, self.wMean, self.characteristicDistance = (
             self.getRoutingParamAvgDischarge(self.avgDischarge, self.dist2celllength)
         )
 
         # channel width (m), depth (m) and fraction
+        # channelWidth (m), channelDepth (m, from avgDischarge; constantChannelDepth is
+        # used only for the bankfull capacity, unlike master) and channelFraction (-),
+        # also at water-body cells
         self.channelWidth = self.wMean
         self.channelDepth = pcr.max(0.0, self.yMean)
         self.channelFraction = pcr.max(
@@ -1845,6 +2343,9 @@ class Routing(object):
         )
 
         # water height for the first time step
+        # CAUTION (R17): this first-time-step block has no lasting effect:
+        # dynamicFracWat is recomputed unconditionally below, and water_height is
+        # recomputed before the kinematic methods use it
         if currTimeStep.timeStepPCR == 1:
             if self.floodPlain:
                 self.dynamicFracWat, self.water_height = self.returnFloodedFraction(
@@ -1860,6 +2361,8 @@ class Routing(object):
             self.dynamicFracWat = pcr.ifthen(self.landmask, self.dynamicFracWat)
 
         # channel bankfull capacity (m3)
+        # (m3 per cell; fixed in the RAWS 5 arcmin configurations, from constant width
+        # and depth)
         if self.floodPlain:
             if self.usingFixedBankfullCapacity:
                 self.channelStorageCapacity = self.predefinedBankfullCapacity
@@ -1869,11 +2372,28 @@ class Routing(object):
                 )
 
         # flood inundation fraction (-) and depth (m)
+        # from the end-of-previous-day channelStorage; at water-body cells it holds the
+        # cell's share of the lake/reservoir storage, so a full reservoir appears as a
+        # large flood volume above the river bankfull capacity of the cell
         self.innundatedFraction, self.floodDepth = (
             self.returnInundationFractionAndFloodDepth(self.channelStorage)
         )
         # dynamicFracWat: fraction of surface water bodies (-), including lakes and reservoirs; lake and
         # reservoir surface water fraction
+        # dynamicFracWat (-) = fracWat + (1 - fracWat) * max(channelFraction, inundated
+        # fraction), at least fracWat and 1e-6, at most 1. This start-of-day value sets
+        # the open-water evaporation of the day (calculate_evaporation).
+        #
+        # CAUTION (R8): at water-body cells with fracWat < 1, the inundated fraction
+        # comes from the cell's floodplain elevation profile applied to the reservoir
+        # storage share (with dynamicFloodPlain), not from the reservoir's own
+        # area-storage relation, so the evaporating area grows with storage in a way the
+        # reservoir data do not define. During simplifiedKinematicWave routing,
+        # dynamicFracWat is overwritten per sub-step from the channel water only (the
+        # body storage is then inside WaterBodies); that end-of-routing value is the one
+        # used for riverbed infiltration (calculate_exchange_to_groundwater) and
+        # reported (reporting.py, dynamicFracWat). Under accuTravelTime it is not
+        # changed during routing.
         self.dynamicFracWat = pcr.cover(pcr.min(1.0, self.WaterBodies.fracWat), 0.0)
         # fraction of channel (including its excess above bankfull capacity)
         self.dynamicFracWat += pcr.max(0.0, 1.0 - self.dynamicFracWat) * pcr.max(
@@ -1892,6 +2412,8 @@ class Routing(object):
         )
 
         # routing methods
+        # accuTravelTime and simplifiedKinematicWave: WaterBodies.update once per day
+        # (simple_update). kinematicWave: once per sub-step (kinematic_wave_update).
         if self.method == "accuTravelTime" or self.method == "simplifiedKinematicWave":
             self.simple_update(landSurface, groundwater, currTimeStep, meteo)
         if self.method == "kinematicWave":
@@ -1900,25 +2422,55 @@ class Routing(object):
 
         # infiltration from surface water bodies (channels, lakes and reservoirs) to groundwater, passed on in
         # the next time step
+        # riverbedExchange (m3/day) is taken from channelStorage after the water-body
+        # storage has been spread back over the body's cells, so at body cells it is
+        # lake/reservoir water; it reaches WaterBodies only as a lower storage, i.e.
+        # inside the next day's inflow residual
         self.calculate_exchange_to_groundwater(groundwater, currTimeStep)
 
         # volume released in pits (losses to the ocean/endorheic basins)
+        # (m3/day; INTERFACE: pcrglobwb.py, water balance at pits)
         self.outgoing_volume_at_pits = pcr.ifthen(
             self.landmask, pcr.cover(pcr.ifthen(self.lddMap == pcr.ldd(5), self.Q), 0.0)
         )
 
         # volume that can be abstracted in the next time step
+        # readAvlChannelStorage (m3 per cell) for the next day's surface-water
+        # allocation. INTERFACE: water_management/main_water_management.py (update,
+        # available_surface_water_volume); not read when using_qualloc is True. At
+        # water-body cells it is computed from the cell's share of the lake/reservoir
+        # storage, so lakes and reservoirs are an abstraction source, with no lower
+        # limit at minResvrFrac (K2 of the gross-vs-net live log).
+        #
+        # CAUTION (N5): the RAWS configurations set allocation-zone keys that the RAWS
+        # code does not read, so surface water is allocated locally and a reservoir's
+        # cells supply only the demand located on those cells.
+        #
+        # CAUTION (R15): computed before calculate_statistics, i.e. with the statistics
+        # of the previous day (on master: after).
+        #
+        # EXTENSION POINT: masking water-body cells here, or flooring the available
+        # volume at a reservoir's lower limit (e.g. minResvrFrac * waterBodyCap spread
+        # by cell area), changes what demand can take from reservoirs. Contract: m3 per
+        # cell, >= 0, <= channelStorage, defined on the landmask. The QUAlloc path reads
+        # channelStorage instead (landSurface.py).
         self.readAvlChannelStorage = pcr.max(
             0.0, self.estimate_available_volume_for_abstraction(self.channelStorage)
         )
 
         # water body balance check
+        # (m over the body area; WaterBodies' own balance residual, diagnostic only)
         self.waterBodyBalance = self.WaterBodies.waterBodyBalance
 
         # total runoff from local land surface runoff and local changes in water bodies (m)
+        # (m/day per cell: runoff, abstraction, return flow, evaporation and riverbed
+        # infiltration; no reader outside this file, reporting.py builds its own
+        # totalRunoff)
         self.totalRunoff = self.local_input_to_surface_water / self.cellArea
 
         # statistics of long- and short-term flow values
+        # (also copies WaterBodies.avgInflow and WaterBodies.avgOutflow into routing's
+        # states)
         self.calculate_statistics(groundwater, landSurface)
 
         # old-style reporting; TODO: remove
@@ -1927,12 +2479,31 @@ class Routing(object):
     def calculate_potential_evaporation(
         self, landSurface, currTimeStep, meteo, definedDynamicFracWat=None
     ):
+        """
+        Potential open-water evaporation over the whole cell area (m/day per cell);
+        returned, not stored.
+
+        E_pot = max(0, kc * ET0 - ETact) * dynamicFracWat, with kc the monthly
+        open-water crop coefficient (cropCoefficientWaterNC, at least minCropWaterKC;
+        read on the first day of each month and at the first time step), ET0 =
+        meteo.referencePotET (m/day) and ETact = landSurface.actualET (m/day, over the
+        whole cell, all land-cover tiles). Only the part of kc * ET0 not already
+        evaporated by the land-surface scheme is taken from surface water. INTERFACE:
+        meteo.py (referencePotET), landSurface.py (actualET). Water bodies:
+        dynamicFracWat at body cells is at least WaterBodies.fracWat (CAUTION R8 in
+        update).
+
+        CAUTION (R16): if definedDynamicFracWat is passed (no caller does), the local
+        name dynamicFracWat is undefined and the call fails.
+        """
 
         if not self.no_zero_crop_water_coefficient:
             self.waterKC = 0.0
 
         # potential evaporation from water bodies; if landSurface.actualET < waterKC *
         # meteo.referencePotET * fracWat, more evaporation is added
+        # CAUTION: the code compares actualET with waterKC * referencePotET (no fracWat
+        # factor) and multiplies the excess by dynamicFracWat afterwards
         if (
             (currTimeStep.day == 1) or (currTimeStep.timeStepPCR == 1)
         ) and self.no_zero_crop_water_coefficient:
@@ -1947,12 +2518,14 @@ class Routing(object):
 
         # potential evaporation from water bodies (m/day), reduced by the evaporation calculated in the
         # landSurface module; not over the entire cell area
+        # (m/day per unit of water surface)
         waterBodyPotEvapOvesSurfaceWaterArea = pcr.ifthen(
             self.landmask,
             pcr.max(0.0, self.waterKC * meteo.referencePotET - landSurface.actualET),
         )
 
         # potential evaporation from water bodies over the entire cell area (m/day)
+        # (CAUTION R16: no else branch)
         if definedDynamicFracWat is None:
             dynamicFracWat = self.dynamicFracWat
         waterBodyPotEvap = pcr.max(
@@ -1961,6 +2534,26 @@ class Routing(object):
         return waterBodyPotEvap
 
     def calculate_evaporation(self, landSurface, groundwater, currTimeStep, meteo):
+        """
+        Open-water evaporation taken from channelStorage (simple_update only;
+        kinematic_wave_update computes its own per sub-step).
+
+        Sets self.waterBodyPotEvap (m/day over the cell), self.waterBodyEvaporation
+        (actual, m/day over the cell; volume = min(max(0, channelStorage),
+        waterBodyPotEvap * cellArea)) and self.remainWaterBodyPotEvap (m/day, unmet
+        part; no reader in src/). Water bodies: called before the water-body storage is
+        moved into WaterBodies, so at body cells the evaporation is drawn from the
+        cell's storage share plus the day's local inputs; it lowers the inflow residual
+        seen by WaterBodies, which never receives evaporation as a separate term.
+
+        INTERFACE: reporting.py (waterBodyActEvaporation, waterBodyPotEvaporation,
+        totalEvaporation) and pcrglobwb.py (water-balance accumulators).
+
+        EXTENSION POINT: the per-body evaporation volume
+        pcr.areatotal(volLocEvapWaterBody, self.WaterBodies.waterBodyIds) (m3/day) is
+        the open-water loss to pass to WaterBodies.update if a scheme needs a gross
+        inflow.
+        """
 
         # potential evaporation from water bodies over the entire cell area, not only the water bodies (m/day)
         self.waterBodyPotEvap = self.calculate_potential_evaporation(
@@ -1968,6 +2561,7 @@ class Routing(object):
         )
 
         # evaporation volume from water bodies (m3), not limited to the available channelStorage
+        # (m3/day per cell)
         volLocEvapWaterBody = self.waterBodyPotEvap * self.cellArea
         # limited to the available channelStorage
         volLocEvapWaterBody = pcr.min(
@@ -1975,19 +2569,44 @@ class Routing(object):
         )
 
         # update channelStorage (m3) after evaporation from water bodies
+        # at water-body cells this removes water from the lake/reservoir storage share
+        # (moved into WaterBodies later in simple_update)
         self.channelStorage = self.channelStorage - volLocEvapWaterBody
         self.local_input_to_surface_water -= volLocEvapWaterBody
 
         # evaporation from water bodies (m)
+        # (m/day over the whole cell area, not over the water surface)
         self.waterBodyEvaporation = volLocEvapWaterBody / self.cellArea
         self.waterBodyEvaporation = pcr.ifthen(self.landmask, self.waterBodyEvaporation)
 
         # remaining potential evaporation from water bodies (m)
+        # (not read anywhere in src/; not set by kinematic_wave_update)
         self.remainWaterBodyPotEvap = pcr.max(
             0.0, self.waterBodyPotEvap - self.waterBodyEvaporation
         )
 
     def calculate_exchange_to_groundwater(self, groundwater, currTimeStep):
+        """
+        Riverbed infiltration from surface water to groundwater, self.riverbedExchange
+        (m3/day per cell), subtracted from channelStorage after routing and after the
+        water-body storage has been spread back over the body's cells.
+
+        Rate: min(0.1, riverBedConductivity) (m/day) * dynamicFracWat * cellArea, only
+        where 0 < baseflow < total groundwater abstraction, at most 75 percent of the
+        (non-negative) channel storage.
+
+        INTERFACE: reads groundwater.py (riverBedConductivity, nonFossilGroundwaterAbs,
+        fossilGroundwaterAbstr, baseflow; m/day); groundwater.py (update_storage) adds
+        riverbedExchange / cellArea to groundwater storage on the next day. Water
+        bodies: at body cells the flux is drawn from the lake/reservoir storage share
+        and reaches WaterBodies only as a negative term in the next day's inflow
+        residual. dynamicFracWat here is the end-of-routing value (CAUTION R8 in
+        update).
+
+        EXTENSION POINT: the per-body seepage pcr.areatotal(self.riverbedExchange,
+        self.WaterBodies.waterBodyIds) (m3/day) can be passed to WaterBodies.update on
+        the next day.
+        """
 
         if self.debugWaterBalance:
             # (m3)
@@ -2035,6 +2654,7 @@ class Routing(object):
         self.riverbedExchange = pcr.ifthen(self.landmask, self.riverbedExchange)
 
         # update channelStorage (m3) after riverbedExchange (m3)
+        # (at water-body cells: lake/reservoir water)
         self.channelStorage -= self.riverbedExchange
         self.local_input_to_surface_water -= self.riverbedExchange
 
@@ -2051,8 +2671,27 @@ class Routing(object):
             )
 
     def return_flows_to_wastewater_treatment_plants(self, currTimeStep, landSurface):
+        """
+        Redirect domestic and manufacturing return flows to wastewater-treatment-plant
+        cells (WWtPlantsNC) and set self.nonIrrReturnFlow (m3/day per cell) for
+        simple_update.
+
+        INTERFACE: landSurface.nonIrrReturnFlowVolumePerSector (m3/day per cell and
+        sector; landSurface.py, standard or QUAlloc branch of update). Within a
+        treatment zone (zone_id != 0) the domestic + manufacturing return flows of all
+        cells are summed (pcr.areatotal over zone_id) and put at the cell where zone_id
+        == plant_id; the other cells of the zone get 0; cells outside zones keep their
+        own value. Livestock, thermoelectric and industry return flows stay at their own
+        cells. The behaviour where plant_id is missing is not determined from the code.
+        Water bodies: a lake/reservoir cell can lose its local return flow, or receive a
+        whole zone's return flow if the plant cell lies in the body; either way it
+        enters that day's inflow residual.
+        """
 
         # wastewater treatment plants: ids
+        # CAUTION (R14): the zone maps are read only when doy == 1, so a run that does
+        # not start on 1 January fails at the first use below (attributes undefined; not
+        # run)
         if currTimeStep.doy == 1:
             # wastewater treatment plant (point) locations
             self.WWt_plantID = vos.netcdf2PCRobjClone(
@@ -2083,6 +2722,8 @@ class Routing(object):
         )
 
         # redirect the return flow to the wastewater treatment plant locations, with removal at the plant (m3/day)
+        # CAUTION: no removal is applied here; the zone's domestic and manufacturing
+        # return flow is moved to the plant cell in full
         self.nonIrrReturnFlow = pcr.ifthenelse(
             # cells not in a wastewater treatment zone
             self.WWt_zoneID == 0,
@@ -2101,6 +2742,7 @@ class Routing(object):
         )
 
         # return flow of the non-irrigation water demand, calculated in landSurface.py (m3)
+        # (livestock, thermoelectric and industry return flows stay at their own cells)
         self.nonIrrReturnFlow = (
             self.nonIrrReturnFlow
             + landSurface.nonIrrReturnFlowVolumePerSector["livestock"]
@@ -2109,8 +2751,42 @@ class Routing(object):
         )
 
     def simple_update(self, landSurface, groundwater, currTimeStep, meteo):
+        """
+        Daily update for accuTravelTime and simplifiedKinematicWave: local fluxes, the
+        water-body step (WaterBodies.update, once per day) and the channel routing.
+
+        Order (volumes in m3 per cell unless stated): (1) runoff + baseflow added to
+        channelStorage; (2) optional upstream discharge from other sub-runs; (3)
+        surface-water abstraction subtracted; (4) non-irrigation return flows added
+        (moved to treatment plants if WWtPlantsNC is set); (5) open-water evaporation
+        subtracted (calculate_evaporation); (6) at water-body cells the channel storage
+        (rounded down to whole m3) is moved into the water body and WaterBodies.update
+        is called once with a time step of 86400 s; (7) the release is put back into
+        channelStorage (outlet cell for simplifiedKinematicWave, spread over the body's
+        cells for accuTravelTime); (8) channel routing; (9) the water-body storage is
+        spread back over the body's cells (return_water_body_storage_to_channel). Steps
+        (1) to (5) act on every cell, water-body cells included, i.e. directly on the
+        lake/reservoir storage share of those cells.
+
+        What the release rule sees on day t: storage = end of day t-1 storage after
+        release, plus the river water that reached the body's cells during the routing
+        of day t-1 (merged in step 9 of day t-1, including any undeparted release, R3),
+        minus the riverbed infiltration of day t-1, plus the local terms of day t on the
+        body's cells (runoff, baseflow and return flows, minus abstraction and
+        open-water evaporation). Upstream river water routed on day t reaches the
+        storage only on day t+1 (one-day lag), except what passes through the body
+        within the day (R2, R7). The release decided on day t is routed on day t.
+
+        The same sequence applies to both RAWS 5 arcmin configurations. With
+        online_pcrglobwb_qualloc_5arcminutes.ini (using_qualloc and quality True), the
+        abstraction of step (3) comes from QUAlloc (CAUTION R12 in __init__), the return
+        flows of step (4) from QUAlloc's per-sector return flows, and the DynQual steps
+        marked below run in addition; they do not change any water quantity used here.
+        """
 
         # update the time steps for the long- and short-term statistics (avgDischarge, avgInflow, avgOutflow, etc.)
+        # (days; the same counter is passed to WaterBodies.update below; incremented
+        # after downstreamDemand was computed in update)
         self.timestepsToAvgDischarge += 1.0
 
         if self.debugWaterBalance:
@@ -2119,9 +2795,20 @@ class Routing(object):
 
         # total local change (input) to surface water storage (m3); only local processes, no routing;
         # initialized at zero
+        # local_input_to_surface_water (m3 per cell): runoff, abstraction, return flow
+        # and evaporation (and riverbed infiltration, in update); not the upstream input
+        # nor the release. INTERFACE: reporting.py (local_water_body_flux, totalRunoff),
+        # pcrglobwb.py (water balance).
         self.local_input_to_surface_water = pcr.scalar(0.0)
 
         # runoff from land surface cells (m/day)
+        # INTERFACE: landSurface.landSurfaceRunoff (direct runoff + interflow, m/day;
+        # landSurface.py) and groundwater.baseflow (m/day; groundwater.py), both over
+        # the whole cell area. At water-body cells this is the only way precipitation
+        # reaches the lake/reservoir: the land-cover fractions cover the whole cell
+        # (landSurface.py), so rain on the water surface first passes through the soil
+        # scheme. self.runoff is also read by QUAlloc on the next day and by
+        # reporting.py.
         self.runoff = landSurface.landSurfaceRunoff + groundwater.baseflow
 
         # update channelStorage (m3) after runoff
@@ -2129,6 +2816,11 @@ class Routing(object):
         self.local_input_to_surface_water += self.runoff * self.cellArea
 
         # upstream discharge (m3/s)
+        # optional (upstream_discharge_input_files): discharge (m3/s) of other sub-runs
+        # at cells just outside the landmask, moved one cell downstream with
+        # ldd_complete and added as a daily volume (m3/s * 86400). Not included in
+        # local_input_to_surface_water, nor in the balance check below. If the receiving
+        # cell is a water-body cell it becomes part of today's inflow residual.
         total_upstream_discharge = pcr.spatial(pcr.scalar(0.0))
         if self.upstream_discharge_input_files is not None:
             for i_ups_file in range(0, len(self.upstream_discharge_input_files)):
@@ -2159,29 +2851,50 @@ class Routing(object):
         )
 
         # update channelStorage (m3) after actSurfaceWaterAbstraction
+        # INTERFACE: landSurface.actSurfaceWaterAbstract (m/day per cell): the
+        # surface-water withdrawal decided earlier on the same day, by
+        # water_management/main_water_management.py (bounded by readAvlChannelStorage of
+        # the previous day) or by QUAlloc (bounded by channelStorage / cellArea of the
+        # previous day), copied by landSurface.py. At water-body cells it is taken from
+        # the cell's share of the lake/reservoir storage before WaterBodies.update, so
+        # the release rule sees post-withdrawal storage and the withdrawal also lowers
+        # the inflow residual and avgInflow.
+        #
+        # EXTENSION POINT: the per-body withdrawal
+        # pcr.areatotal(landSurface.actSurfaceWaterAbstract * self.cellArea,
+        # self.WaterBodies.waterBodyIds) (m3/day) can be formed here and passed to
+        # WaterBodies.update (for a gross inflow, or a demand-aware rule).
         self.channelStorage -= landSurface.actSurfaceWaterAbstract * self.cellArea
         self.local_input_to_surface_water -= (
             landSurface.actSurfaceWaterAbstract * self.cellArea
         )
 
         # channelStorage after surface water abstraction, for reporting (m3)
+        # (diagnostic; not read elsewhere in src/)
         self.channelStorageAfterAbstraction = pcr.ifthen(
             self.landmask, self.channelStorage
         )
 
         # redirect the return flow to the wastewater treatment plant locations (m3)
+        # non-irrigation return flows (m3/day per cell). INTERFACE: landSurface.py
+        # (nonIrrReturnFlowVolume, nonIrrReturnFlowVolumePerSector). Irrigation return
+        # flows reach the channel only through the soil (runoff and baseflow).
         if self.WWtPlants:
             self.return_flows_to_wastewater_treatment_plants(currTimeStep, landSurface)
         else:
             self.nonIrrReturnFlow = landSurface.nonIrrReturnFlowVolume
 
         # add the return flows to channelStorage (m3)
+        # (at water-body cells: part of today's inflow residual)
         self.channelStorage += self.nonIrrReturnFlow
         self.local_input_to_surface_water += self.nonIrrReturnFlow
 
         # evaporation from water bodies (sets self.waterBodyEvaporation, in m)
+        # subtracts open-water evaporation (m3) on every cell, water-body cells
+        # included, before the storage is moved into the water bodies
         self.calculate_evaporation(landSurface, groundwater, currTimeStep, meteo)
 
+        # per-cell check in m over the cell area (log message only)
         if self.debugWaterBalance:
             vos.waterBalanceCheck(
                 [self.runoff, self.nonIrrReturnFlow / self.cellArea],
@@ -2195,17 +2908,25 @@ class Routing(object):
             )
 
         # lake and reservoir operations
+        # From here to the routing call, everything is done once per day.
         if self.debugWaterBalance:
             # (m3)
             preStorage = self.channelStorage
 
         # move channelStorage to waterBodyStorage at lake and reservoir cells
+        # channel storage at water-body cells (m3 per cell): the cell's share of the end
+        # of day t-1 lake/reservoir storage, the channel water that reached the cell
+        # during the routing of day t-1, minus the riverbed infiltration of day t-1,
+        # plus today's local terms added above
         storageAtLakeAndReservoirs = pcr.ifthen(
             pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0, self.channelStorage
         )
         storageAtLakeAndReservoirs = pcr.cover(storageAtLakeAndReservoirs, 0.0)
 
         # only non-negative, rounded-down values
+        # rounded down to whole m3 and only if positive; the remainder (< 1 m3) and any
+        # negative storage stay in channelStorage at the body's cells and are routed as
+        # river water
         storageAtLakeAndReservoirs = pcr.max(
             0.00, pcr.rounddown(storageAtLakeAndReservoirs)
         )
@@ -2213,6 +2934,50 @@ class Routing(object):
         self.channelStorage -= storageAtLakeAndReservoirs
 
         # update waterBodyStorage (inflow, storage and outflow)
+        # INTERFACE: waterBodies.py, WaterBodies.update(newStorageAtLakeAndReservoirs,
+        # timestepsToAvgDischarge, maxTimestepsToAvgDischargeShort,
+        # maxTimestepsToAvgDischargeLong, currTimeStep, avgChannelDischarge,
+        # length_of_time_step, downstreamDemand). Called once per day here
+        # (accuTravelTime and simplifiedKinematicWave). Arguments:
+        #
+        # storageAtLakeAndReservoirs: m3 per cell at water-body cells, 0 elsewhere;
+        # WaterBodies sums it per body (pcr.areatotal) and the difference with its
+        # previous storage is the day's net inflow residual (WaterBodies.inflow, m3;
+        # inflowInM3PerSec, m3/s);
+        #
+        # self.timestepsToAvgDischarge: days (already incremented today), weight of the
+        # running means; self.maxTimestepsToAvgDischargeShort / Long: 30 / 1825 days,
+        # windows of avgInflow / avgOutflow; currTimeStep: used only in the
+        # balance-check message;
+        #
+        # self.avgDischarge: m3/s per cell, long-term mean channel discharge up to the
+        # previous day; used by WaterBodies only as a fallback of avgOutflow and for the
+        # lake weir width;
+        #
+        # vos.secondsPerDay(): 86400 s, the length of the step (release in m3 per day);
+        #
+        # self.downstreamDemand: m3/s per cell, environmental-flow discharge (see
+        # update);
+        #
+        # CAUTION (N2): its floor on the release is negligible as the rule is written.
+        #
+        # The native reservoir rule (WaterBodies.getReservoirOutflow) also has the
+        # quirks N1 (the reduction factor is a step at minResvrFrac, not a ramp) and N3
+        # (m3 compared with m3/s above the upper limit).
+        #
+        # EXTENSION POINT: a new release scheme is selected inside WaterBodies
+        # (getWaterBodyOutflow); new inputs are passed here as extra arguments, and in
+        # the same way at the kinematic_wave_update call. Contract: (i) inputs per water
+        # body, constant over its cells (pcr.areatotal / areaaverage over
+        # self.WaterBodies.waterBodyIds), covered with 0 outside bodies, in m3 per step
+        # or m3/s with the step length length_of_time_step; (ii) the release is written
+        # to WaterBodies.waterBodyOutflow in m3 per step, >= 0, <= storage, the same on
+        # every cell of the body (CAUTION R1), and subtracted from
+        # WaterBodies.waterBodyStorage inside WaterBodies; (iii) WaterBodies applies the
+        # 25 percent cap and the round-down to whole m3 after the rule
+        # (getWaterBodyOutflow) unless that is changed too; (iv) running means a scheme
+        # needs must be kept in WaterBodies and exposed as routing states (getState,
+        # getICs, calculate_statistics).
         self.WaterBodies.update(
             storageAtLakeAndReservoirs,
             self.timestepsToAvgDischarge,
@@ -2225,16 +2990,31 @@ class Routing(object):
         )
 
         # waterBodyStorage (m3) after outflow, per water body id (not per cell)
+        # (INTERFACE: kept for getState and DynQual; reporting.py reads
+        # WaterBodies.waterBodyStorage directly)
         self.waterBodyStorage = pcr.ifthen(
             self.landmask, self.WaterBodies.waterBodyStorage
         )
 
+        # DynQual only: storage before outflow (m3 per body), read by qualityWaterBody
         if self.quality:
             self.waterBodyStorageTimeBefore = (
                 self.waterBodyStorage + self.WaterBodies.waterBodyOutflow
             )
 
         # transfer the outflow from lakes and reservoirs to channelStorage (m3/day)
+        # release (m3/day) taken at the outlet cell only (WaterBodies.waterBodyOut).
+        # CAUTION (R1): WaterBodies computes waterBodyOutflow on every cell of a body
+        # and subtracts each cell's own value from that cell's storage, while only the
+        # outlet value enters the channel here and return_water_body_storage_to_channel
+        # averages the storage over the body's cells. If the release differed between
+        # cells of one body, mass would not be conserved. In the native rule a
+        # difference can come only from per-cell inputs (downstreamDemand, spatial
+        # minResvrFrac / maxResvrFrac maps) or from per-cell values of
+        # WaterBodies.avgInflow after a change of a body's extent (R18); with the RAWS
+        # cold starts, scalar fractions and unchanged extents they are uniform per body,
+        # so the issue is latent. A replacement scheme must return the same release on
+        # every cell of a body.
         waterBodyOutflow = pcr.cover(
             pcr.ifthen(
                 self.WaterBodies.waterBodyOut, self.WaterBodies.waterBodyOutflow
@@ -2242,6 +3022,11 @@ class Routing(object):
             0.0,
         )
 
+        # accuTravelTime: the outlet value is spread equally over the body's cells
+        # (pcr.areaaverage of a map that is the release at the outlet and 0 elsewhere:
+        # release / number of cells, by count, not by area); the body's characteristic
+        # distance (getCharacteristicDistance) then carries it past the outlet within
+        # the day. simplifiedKinematicWave: the release stays at the outlet cell only.
         if self.method == "accuTravelTime":
             # distribute the outflow over the lake/reservoir cells, to avoid waterBodyOutflow skipping cells
             waterBodyOutflow = pcr.areaaverage(
@@ -2251,9 +3036,15 @@ class Routing(object):
                 pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0, waterBodyOutflow
             )
         # (m3/day)
+        # (release as placed in the channel; not set by kinematic_wave_update; no reader
+        # outside this file)
         self.waterBodyOutflow = pcr.cover(waterBodyOutflow, 0.0)
 
         # update channelStorage (m3) after waterBodyOutflow (m3)
+        # EXTENSION POINT: this is where the release enters the channel. To make it
+        # leave the body within the day under simplifiedKinematicWave (R3), it could be
+        # added to the cell downstream of the outlet instead, as kinematic_wave_update
+        # does (pcr.upstream(self.lddMap, ...)).
         self.channelStorage += self.waterBodyOutflow
         # note: local_input_to_surface_water does not include waterBodyOutflow
 
@@ -2269,6 +3060,10 @@ class Routing(object):
                 threshold=1e-3,
             )
 
+        # DynQual (quality = True): meteo and pollutant inputs, a copy of the storage
+        # (channelStorageTimeBefore), qualityLocal and qualityWaterBody. They change
+        # water-quality variables only (and the reported waterBodyEvaporation on
+        # freezing days, CAUTION R13), not channelStorage or the water-body storage.
         if self.quality:
             # daily input data, unless adjusted in the function
             self.readExtensiveMeteo(currTimeStep)
@@ -2297,15 +3092,29 @@ class Routing(object):
 
         # routing: returns the new channelStorage (still without waterBodyStorage) and self.Q, the channel
         # discharge (m3/day)
+        # accuTravelTime: one daily step. simplifiedKinematicWave: sub-steps of at most
+        # maxiumLengthOfSubTimeStep seconds, with the body's cells routed as river cells
+        # and the outlet's initial discharge set to the release rate at each sub-step
+        # (CAUTION R2, R3). Neither calls WaterBodies.update.
         if self.method == "accuTravelTime":
             self.accuTravelTime()
         if self.method == "simplifiedKinematicWave":
             self.simplifiedKinematicWave(meteo, landSurface, groundwater)
         # channel discharge of the current time step (m3/s)
+        # (daily mean, m3/s per cell. INTERFACE: QUAlloc on the next day,
+        # landSurface.py)
         self.discharge = self.Q / vos.secondsPerDay()
         # reported channel discharge cannot be negative
         self.discharge = pcr.max(0.0, self.discharge)
         self.discharge = pcr.ifthen(self.landmask, self.discharge)
+        # disChanWaterBody (m3/s): at water-body cells the maximum discharge over the
+        # body (pcr.areamaximum; master took the outlet value), elsewhere the cell
+        # discharge.
+        #
+        # INTERFACE: reporting.py ("discharge"). It also enters avgDischarge
+        # (calculate_statistics), hence downstreamDemand and readAvlChannelStorage at
+        # body cells. Under simplifiedKinematicWave the maximum may include upstream
+        # water passing through the body (R2).
         self.disChanWaterBody = pcr.ifthen(
             pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0,
             pcr.areamaximum(self.discharge, self.WaterBodies.waterBodyIds),
@@ -2315,23 +3124,42 @@ class Routing(object):
         # reported channel discharge cannot be negative
         self.disChanWaterBody = pcr.max(0.0, self.disChanWaterBody)
 
+        # DynQual only (water temperature, ice, loads averaged over each body)
         if self.quality:
             self.qualityWaterBodyAverage(currTimeStep)
 
         # return waterBodyStorage to channelStorage
+        # spread the lake/reservoir storage (after release) plus the channel water left
+        # in the body's cells back over the body's cells by area: until the next
+        # WaterBodies.update, channelStorage at a body cell is its share of the water
+        # body. Under simplifiedKinematicWave this includes any part of the release that
+        # did not leave the outlet cell and upstream water still in the body's cells;
+        # both enter the next day's inflow residual (CAUTION R3).
         self.channelStorage = self.return_water_body_storage_to_channel(
             self.channelStorage
         )
 
         # reported channel storage cannot be negative
+        # (creates water where storage was negative; not on master)
         self.channelStorage = pcr.max(0.0, self.channelStorage)
 
+        # DynQual only: concentrations from routed loads and channelStorage (read only)
         if self.quality:
             self.estimate_concentrations()
 
     def calculate_alpha_and_initial_discharge_for_kinematic_wave(
         self, channelStorage, water_height, innundatedFraction, floodDepth
     ):
+        """
+        Kinematic-wave alpha and initial discharge (m3/s) of each cell, assuming a
+        rectangular channel, from channelStorage (m3), water_height (m), the inundated
+        fraction (-) and the flood depth (m). alpha links wetted area and discharge, A =
+        alpha * Q ** beta (m2 per (m3/s) ** beta). Used by simplifiedKinematicWave when
+        dynamicFloodPlain is False and by kinematic_wave_update. Water bodies: at body
+        cells the initial discharge is then overwritten (release rate at the outlet; 0
+        at the other body cells) but alpha is kept, so the body's cells route like river
+        cells of the same geometry.
+        """
         # alpha (-), the roughness coefficient of the kinematic wave (see
         # http://pcraster.geo.uu.nl/pcraster/4.0.0/doc/manual/op_kinematic.html), from the wetted area (m2),
         # wetted perimeter (m) and beta (-), assuming a rectangular channel
@@ -2383,6 +3211,7 @@ class Routing(object):
             * self.gradient ** (-0.5)
         ) ** self.beta
         # (m3)
+        # CAUTION: dischargeInitial is a discharge (m3/s), not a volume
         dischargeInitial = pcr.ifthenelse(
             alpha > 0.0, (channel_wetted_area / alpha) ** (1.0 / self.beta), 0.0
         )
@@ -2390,6 +3219,17 @@ class Routing(object):
         return (alpha, dischargeInitial)
 
     def returnInundationFractionAndFloodDepth(self, channelStorage):
+        """
+        Inundated fraction (-) and flood depth (m) of each cell for a given channel
+        storage (m3 per cell). Without floodplain: channelFraction and 0. With
+        floodplain: the volume above the bankfull capacity (channelStorageCapacity) is
+        matched to the flood volumes of the relative-elevation profile (smoothed with a
+        logistic function), giving a fraction between channelFraction and 1. Water
+        bodies: update calls it with the end-of-day channelStorage, which at body cells
+        holds the lake/reservoir storage share, so the fraction there reflects the
+        reservoir volume spread on the cell's floodplain profile (CAUTION R8 in update);
+        the kinematic loops call it with routed channel water only.
+        """
 
         # flood inundation depth above the floodplain (m)
         floodDepth = 0.0
@@ -2460,8 +3300,28 @@ class Routing(object):
         return inundatedFraction, floodDepth
 
     def return_water_body_storage_to_channel(self, channelStorage):
+        """
+        Spread the water-body storage back over the body's cells and return the new
+        channelStorage (m3 per cell).
+
+        For each body: total = WaterBodies.waterBodyStorage (m3, the body value, taken
+        as the mean over its cells with pcr.areaaverage) + the channel water in its
+        cells (pcr.areatotal of channelStorage); each body cell receives total *
+        cellArea / (sum of the body's cell areas). Other cells keep channelStorage.
+
+        INTERFACE: reads WaterBodies.waterBodyStorage and waterBodyIds (waterBodies.py).
+        Called once per day after routing (simple_update), at every sub-step
+        (kinematic_wave_update), and by DynQual (qualityLocal, qualityWaterBodyAverage)
+        on copies whose result is not assigned to channelStorage.
+
+        CAUTION (R1): the areaaverage assumes that WaterBodies.waterBodyStorage is the
+        same on every cell of a body, which holds only if the release
+        (WaterBodies.waterBodyOutflow) is the same on every cell; mass is conserved only
+        then, because simple_update injects the outlet value of the release.
+        """
 
         # return waterBodyStorage to channelStorage
+        # (m3 per body, on its cells)
         waterBodyStorageTotal = pcr.ifthen(
             pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0,
             pcr.areaaverage(
@@ -2473,6 +3333,7 @@ class Routing(object):
                 pcr.ifthen(self.landmask, self.WaterBodies.waterBodyIds),
             ),
         )
+        # (m3 per cell: the body total times the cell's share of the body's cell area)
         waterBodyStoragePerCell = (
             waterBodyStorageTotal
             * self.cellArea
@@ -2492,6 +3353,27 @@ class Routing(object):
         return channelStorage
 
     def kinematic_wave_update(self, landSurface, groundwater, currTimeStep, meteo):
+        """
+        Daily update for routingMethod = kinematicWave (no RAWS configuration uses it).
+
+        Abstraction once per day, then for each sub-step (length dt, s): runoff +
+        baseflow and landSurface.nonIrrReturnFlow (m/day) scaled by dt / 86400;
+        open-water evaporation; at body cells the channel storage (rounded down) is
+        moved into WaterBodies and WaterBodies.update is called with length_of_time_step
+        = dt (release in m3 per sub-step); the release is added to the cell downstream
+        of the outlet; the body's cells get zero discharge (upstream water is stored, no
+        pass-through), and the storage is spread back over the body's cells at the end
+        of each sub-step. WaterBodies then updates its running means per sub-step with
+        weight dt / 86400, while its flood term uses a daily volume (vos.secondsPerDay
+        in WaterBodies.getReservoirOutflow) per sub-step.
+
+        CAUTION (R11): compared with simple_update there is no WWtPlants redirection and
+        no upstream_discharge_input_files; the return flow is
+        landSurface.nonIrrReturnFlow (m/day) rather than nonIrrReturnFlowVolume;
+        self.waterBodyOutflow and self.remainWaterBodyPotEvap are not set;
+        WaterBodies.inflowInM3PerSec (reported as lake_and_reservoir_inflow) is that of
+        the last sub-step only. See also (R9) and (R10) inline.
+        """
 
         logger.info("Using the fully kinematic wave method! ")
 
@@ -2504,6 +3386,8 @@ class Routing(object):
 
         # for simplicity, surface water abstraction is done outside the sub-daily time steps;
         # update channelStorage (m3) after actSurfaceWaterAbstraction
+        # INTERFACE: landSurface.actSurfaceWaterAbstract (m/day), see simple_update; at
+        # water-body cells taken from the storage share once, at the start of the day
         self.channelStorage -= landSurface.actSurfaceWaterAbstract * self.cellArea
         self.local_input_to_surface_water -= (
             landSurface.actSurfaceWaterAbstract * self.cellArea
@@ -2558,6 +3442,7 @@ class Routing(object):
                 acc_discharge_volume = pcr.scalar(0.0)
 
             # update channelStorageForRouting after runoff and non-irrigation return flow (m3)
+            # (INTERFACE: landSurface.nonIrrReturnFlow is in m/day, landSurface.py)
             channelStorageForRouting += (
                 (self.runoff + landSurface.nonIrrReturnFlow)
                 * self.cellArea
@@ -2585,6 +3470,11 @@ class Routing(object):
             self.waterBodyPotEvap += water_body_potential_evaporation
 
             # update channelStorageForRouting after evaporation
+            # CAUTION (R10): water_body_potential_evaporation is already a depth per
+            # sub-step (m/day * dt / 86400); multiplying again by dt / 86400 here makes
+            # the evaporation volume about number_of_loops times too small, while
+            # self.waterBodyPotEvap accumulates the daily potential correctly. Same on
+            # master.
             water_body_evaporation_volume = pcr.min(
                 pcr.max(channelStorageForRouting, 0.0),
                 water_body_potential_evaporation
@@ -2614,6 +3504,8 @@ class Routing(object):
                 )
 
             # move channelStorageForRouting (m3) to waterBodyStorage at lake and reservoir cells
+            # (at every sub-step; the body's storage was spread back over its cells at
+            # the end of the previous sub-step)
             storageAtLakeAndReservoirs = pcr.ifthen(
                 pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0,
                 channelStorageForRouting,
@@ -2629,6 +3521,12 @@ class Routing(object):
             )
 
             # update waterBodyStorage (inflow, storage and outflow)
+            # INTERFACE: waterBodies.py, WaterBodies.update, here once per sub-step with
+            # length_of_time_step = length_of_sub_time_step (s); the same arguments as
+            # in simple_update, with the release in m3 per sub-step.
+            #
+            # EXTENSION POINT: extra inputs of a new scheme must be passed here too,
+            # scaled to the sub-step (contract as in simple_update).
             self.WaterBodies.update(
                 storageAtLakeAndReservoirs,
                 self.timestepsToAvgDischarge,
@@ -2641,6 +3539,7 @@ class Routing(object):
             )
 
             # waterBodyOutflow (m3 per sub-time step) at lake/reservoir outlet cells
+            # (release at the outlet cell, m3 per sub-step; 0 at the other cells)
             waterBodyOutflow = pcr.cover(
                 pcr.ifthen(
                     self.WaterBodies.waterBodyOut, self.WaterBodies.waterBodyOutflow
@@ -2659,6 +3558,8 @@ class Routing(object):
 
             # update channelStorage (m3) after waterBodyOutflow (m3); local_input_to_surface_water does not
             # include waterBodyOutflow
+            # the release is added to the cell downstream of the outlet (pcr.upstream
+            # sums the values of each cell's upstream neighbours)
             storage_change_in_volume = pcr.upstream(self.lddMap, waterBodyOutflow)
             channelStorageForRouting += storage_change_in_volume
 
@@ -2681,6 +3582,8 @@ class Routing(object):
             )
 
             # at lake and reservoir outlet cells, the initial discharge is waterBodyOutflowInM3PerSec
+            # (the discharge of all body cells is zeroed after pcr.kinematic below, so
+            # this value does not move water)
             dischargeInitial = pcr.cover(
                 pcr.ifthen(self.WaterBodies.waterBodyOut, waterBodyOutflowInM3PerSec),
                 dischargeInitial,
@@ -2709,6 +3612,9 @@ class Routing(object):
             self.subDischarge = pcr.max(0.0, pcr.cover(self.subDischarge, 0.0))
 
             # zero discharge at lake and reservoir cells
+            # (upstream water stays in the body's cells and is merged into the water
+            # body by return_water_body_storage_to_channel below: no pass-through under
+            # kinematicWave)
             self.subDischarge = pcr.cover(
                 pcr.ifthen(
                     pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0, pcr.scalar(0.0)
@@ -2739,11 +3645,13 @@ class Routing(object):
             channelStorageForRouting += storage_change_in_volume
 
             # return waterBodyStorage to channelStorage
+            # (every sub-step; extracted again at the start of the next sub-step)
             channelStorageForRouting = self.return_water_body_storage_to_channel(
                 channelStorageForRouting
             )
 
             # add waterBodyOutflowInM3PerSec to subDischarge
+            # (the outlet's reported discharge is the release rate)
             self.subDischarge += waterBodyOutflowInM3PerSec
             self.subDischarge = pcr.ifthen(self.landmask, self.subDischarge)
 
@@ -2751,6 +3659,9 @@ class Routing(object):
             acc_discharge_volume += self.subDischarge * length_of_sub_time_step
 
             # update the flood fraction and flood depth
+            # CAUTION (R9): stored as inundatedFraction (one n) while dynamicFracWat
+            # below reads innundatedFraction (two n), the start-of-day value; same on
+            # master
             self.inundatedFraction, self.floodDepth = (
                 self.returnInundationFractionAndFloodDepth(channelStorageForRouting)
             )
@@ -2786,6 +3697,7 @@ class Routing(object):
             )
 
         # evaporation (m/day)
+        # (m/day over the cell; see CAUTION R10)
         self.waterBodyEvaporation = acc_water_body_evaporation_volume / self.cellArea
 
         # local input to surface water (m3)
@@ -2809,6 +3721,7 @@ class Routing(object):
         self.discharge = pcr.max(0.0, self.discharge)
         self.discharge = pcr.ifthen(self.landmask, self.discharge)
 
+        # (as in simple_update: body-maximum discharge at water-body cells)
         self.disChanWaterBody = pcr.ifthen(
             pcr.scalar(self.WaterBodies.waterBodyIds) > 0.0,
             pcr.areamaximum(self.discharge, self.WaterBodies.waterBodyIds),
@@ -2820,8 +3733,24 @@ class Routing(object):
         self.disChanWaterBody = pcr.max(0.0, self.disChanWaterBody)
 
     def calculate_statistics(self, groundwater, landSurface):
+        """
+        Update the running means used by water bodies and water management, after
+        routing.
+
+        Copies WaterBodies.avgInflow (m3/s, 30-day window) and WaterBodies.avgOutflow
+        (m3/s, 1825-day window) into self.avgInflow and self.avgOutflow for getState;
+        WaterBodies keeps the values it actually uses. Updates avgDischarge (m3/s),
+        m2tDischarge ((m3/s)^2), avgDischargeShort (m3/s) and avgBaseflow (m3/s) with
+        the incremental mean x_new = x + (q - x) / min(window, timestepsToAvgDischarge).
+        The discharge used is max(discharge, disChanWaterBody), i.e. the body-maximum
+        discharge at water-body cells. These feed downstreamDemand and
+        readAvlChannelStorage on the next day; avgBaseflow feeds the surface-water /
+        groundwater partitioning (water_management/main_water_management.py).
+        """
 
         # short-term average inflow (m3/s) and long-term average outflow (m3/s) of lakes and reservoirs
+        # (INTERFACE: copies of the WaterBodies running means, for getState only; per
+        # body, also defined outside water bodies)
         self.avgInflow = pcr.ifthen(
             self.landmask, pcr.cover(self.WaterBodies.avgInflow, 0.0)
         )
@@ -2833,6 +3762,7 @@ class Routing(object):
         # http://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
 
         # long-term average discharge
+        # (at water-body cells the body-maximum discharge, disChanWaterBody)
         dishargeUsed = pcr.max(0.0, self.discharge)
         dishargeUsed = pcr.max(dishargeUsed, self.disChanWaterBody)
 
@@ -2841,6 +3771,13 @@ class Routing(object):
             self.maxTimestepsToAvgDischargeLong, self.timestepsToAvgDischarge
         )
         self.avgDischarge = pcr.max(0.0, self.avgDischarge)
+        # CAUTION (R4): m2tDischarge ((m3/s)^2) keeps accumulating squared anomalies
+        # after the window is full, while its divisor in
+        # estimate_discharge_for_environmental_flow stops at 1824, so the variance
+        # estimate grows roughly linearly with the run length beyond 1825 days (by the
+        # arithmetic of the code, not run). The environmental flow then tends to 0.1 *
+        # avgDischarge, which changes downstreamDemand and readAvlChannelStorage over a
+        # long run. Same on master.
         self.m2tDischarge = self.m2tDischarge + pcr.abs(
             deltaAnoDischarge * (dishargeUsed - self.avgDischarge)
         )
@@ -2894,12 +3831,26 @@ class Routing(object):
                 self.avg_netLqWaterToSoil = pcr.max(0.0, self.avg_netLqWaterToSoil)
 
     def estimate_discharge_for_environmental_flow(self, channelStorage):
+        """
+        Environmental-flow discharge (m3/s per cell): max(0.1 * avgDischarge,
+        avgDischarge - 1.2816 * std), std = sqrt(m2tDischarge / max(1, min(1825,
+        timestepsToAvgDischarge) - 1)). 1.2816 is the z-score of the 90th percentile, so
+        avgDischarge - 1.28 std approximates the 10th percentile of a normal
+        distribution. The argument channelStorage is not used. Used for downstreamDemand
+        (update; INTERFACE: WaterBodies.update) and in
+        estimate_available_volume_for_abstraction. At water-body cells the statistics
+        are those of the body-maximum discharge.
+
+        CAUTION (R4): see calculate_statistics.
+        """
 
         # statistical assumption: z-score of the 90th percentile
         z_score = 1.2816
 
         # long-term variance and standard deviation of discharge, using the online algorithm of
         # http://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+        # ((m3/s)^2; CAUTION R4: the divisor stops growing at 1824, the numerator does
+        # not)
         varDischarge = self.m2tDischarge / pcr.max(
             1.0,
             pcr.min(self.maxTimestepsToAvgDischargeLong, self.timestepsToAvgDischarge)
@@ -2926,6 +3877,23 @@ class Routing(object):
     def estimate_available_volume_for_abstraction(
         self, channelStorage, length_of_time_step=vos.secondsPerDay()
     ):
+        """
+        Volume of surface water that may be abstracted on the next day (m3 per cell),
+        from channelStorage S (m3 per cell, end of today).
+
+        A = S * min(1, min(avgDischargeShort, avgDischarge) / Q_env); where
+        avgDischargeShort >= Q_env, A = max(A, (avgDischargeShort - Q_env) *
+        length_of_time_step); then A <= 0.9 * S, A >= 0, rounded down to 0.1 m3. Since
+        Q_env <= avgDischarge, this is 0.9 * S whenever avgDischargeShort >= Q_env, and
+        S * avgDischargeShort / Q_env (at most 0.9 * S) otherwise. Water bodies: at body
+        cells S is the cell's share of the lake/reservoir storage (plus channel water
+        left after routing, minus riverbed infiltration), and the discharge statistics
+        are those of the body-maximum discharge, so the same factor applies to all cells
+        of a body. Nothing here knows waterBodyCap or minResvrFrac (K2).
+
+        INTERFACE: stored as self.readAvlChannelStorage in update; read by
+        water_management/main_water_management.py.
+        """
         # input: channelStorage (m3)
 
         # minimum discharge for environmental flow (m3/s)
@@ -2937,6 +3905,8 @@ class Routing(object):
         readAvlChannelStorage = pcr.max(0.0, channelStorage)
 
         # reduce readAvlChannelStorage if the average discharge < minDischargeForEnvironmentalFlow
+        # (factor 1 when the short- and long-term discharge are at least Q_env; 0 if
+        # Q_env is 0)
         readAvlChannelStorage *= pcr.min(
             1.0,
             vos.getValDivZero(
@@ -2947,6 +3917,10 @@ class Routing(object):
         )
 
         # maintain the environmental flow if the average discharge > minDischargeForEnvironmentalFlow; TODO: check why this is needed
+        # CAUTION: this branch can only increase the available volume (the surplus of
+        # avgDischargeShort over the environmental flow, as a volume per time step); it
+        # does not reserve the environmental flow. Where it applies, the factor above is
+        # already 1.
         readAvlChannelStorage = pcr.ifthenelse(
             self.avgDischargeShort < minDischargeForEnvironmentalFlow,
             readAvlChannelStorage,
@@ -2958,6 +3932,8 @@ class Routing(object):
         )
 
         # maximum fraction of water that can be abstracted from the channel (to avoid flip-flopping)
+        # (at water-body cells: at most 90 percent of the cell's lake/reservoir storage
+        # share per day, whatever the reservoir's fill level)
         maximum_percentage = 0.90
         readAvlChannelStorage = pcr.min(
             readAvlChannelStorage, maximum_percentage * channelStorage
@@ -2972,6 +3948,21 @@ class Routing(object):
         return readAvlChannelStorage
 
     def initiate_old_style_routing_reporting(self, iniItems):
+        """
+        Old-style netCDF reporting of routing attributes by name, configured in
+        routingOptions (outDailyTotNC, outMonthTotNC, outMonthAvgNC, outMonthEndNC,
+        outAnnuaTotNC, outAnnuaAvgNC, outAnnuaEndNC). All seven keys must be present,
+        otherwise self.report is False and nothing is written; no RAWS configuration
+        sets them in routingOptions (their outDailyTotNC is in reportingOptions and is
+        handled by reporting.py).
+
+        EXTENSION POINT: for debugging a release scheme, any Routing attribute that is a
+        PCRaster map at the end of update can be written without a variable_list.py
+        entry, e.g. waterBodyStorage (m3 per body), waterBodyOutflow (m3/day as placed
+        in the channel; simple_update only), downstreamDemand (m3/s),
+        readAvlChannelStorage (m3), disChanWaterBody (m3/s); the unit is written as
+        "undefined". WaterBodies attributes are not reachable by name here.
+        """
 
         self.report = True
         try:
@@ -3055,6 +4046,12 @@ class Routing(object):
                     )
 
     def old_style_routing_reporting(self, currTimeStep):
+        """
+        Write the old-style routing outputs (see initiate_old_style_routing_reporting);
+        called at the end of update. Daily values are those at the end of the day;
+        monthly and yearly totals and averages sum the daily values (meaningful for
+        fluxes, not for storages).
+        """
 
         if self.report:
             timeStamp = datetime.datetime(
@@ -3183,6 +4180,12 @@ class Routing(object):
                         )
 
     def returnFloodedFraction(self, channelStorage):
+        """
+        Flooded fraction (-) and flood depth (m) for a given flood volume (m3 per cell),
+        from the relative-elevation profile. Used by kinAlpha (flood volume above
+        bankfull) and in update at the first time step (with the whole channelStorage,
+        R17).
+        """
         # flooded fraction and associated water height for the given flood volume, using a logistic smoother
         # near intersections (K&K, 2007); find the match based on the shortest distance to the available
         # intersections or steps
@@ -3233,6 +4236,20 @@ class Routing(object):
         return logInt, x + logInt
 
     def kinAlpha(self, channelStorage):
+        """
+        Floodplain-aware kinematic-wave parameters, used by simplifiedKinematicWave when
+        dynamicFloodPlain is True (all RAWS configurations).
+
+        Returns (flooded fraction including the channel fraction (-), flood depth above
+        the floodplain (m), alpha, initial discharge (m3/s)); simplifiedKinematicWave
+        stores the first two as self.dynamicFracWat and self.water_height. Side effect:
+        overwrites self.channelFraction (computed with cellLengthFD). The static branch
+        (ice-dependent Manning with quality = True) is computed but discarded, since
+        mask is always True, so DynQual does not change alpha. Water bodies: at body
+        cells channelStorage is the routed channel water only (the body's storage is
+        inside WaterBodies), so they route like river cells; their initial discharge is
+        then overwritten by simplifiedKinematicWave.
+        """
         mask = pcr.boolean(1)
 
         # kinAlphaDynamic logic
@@ -4077,6 +5094,26 @@ class Routing(object):
     def qualityLocal(
         self, meteo, landSurface, groundwater, currTimeStep, timeSec=vos.secondsPerDay()
     ):
+        """
+        DynQual (quality = True): local water-temperature energy balance, ice formation
+        and local pollutant inputs; called in simple_update after WaterBodies.update and
+        the release injection, before routing.
+
+        Water-body quantities read: self.dynamicFracWat, self.runoff,
+        landSurface.actSurfaceWaterAbstract, self.waterBodyEvaporation,
+        self.channelStorageTimeBefore (copy of channelStorage after the release) and
+        return_water_body_storage_to_channel applied to that copy (result not assigned
+        to channelStorage). Writes no water-quantity state: channelStorage,
+        waterBodyStorage and the WaterBodies attributes are untouched.
+
+        CAUTION (R13): it sets self.waterBodyEvaporation to 0 where the air temperature
+        is below 273.15 K, after the evaporation volume was already removed from
+        channelStorage (calculate_evaporation). On those days the reported open-water
+        evaporation (reporting.py, waterBodyActEvaporation, totalEvaporation) and the
+        water-balance accumulators of pcrglobwb.py miss a volume that was taken from
+        storage, including lake/reservoir storage. Only in
+        online_pcrglobwb_qualloc_5arcminutes.ini among the RAWS configurations.
+        """
 
         # water temperature: surface water energy fluxes (W/m2) within the current time step; ice formation
         # is evaluated before routing to account for the loss in water height, the vertical energy change is
@@ -4311,6 +5348,17 @@ class Routing(object):
         )
 
     def qualityRouting(self, timeSec):
+        """
+        DynQual: route heat and pollutant loads along the ldd over one sub-step of
+        timeSec seconds, moving the fraction subDischarge * timeSec /
+        channelStorageTimeBefore (at most 1) of each cell's load downstream. Called only
+        by simplifiedKinematicWave, once per sub-step (with accuTravelTime and quality =
+        True the loads are not routed; whether this is intended is not determined from
+        the code). Water-body quantities read: self.subDischarge (m3/s) and
+        self.channelStorageTimeBefore (m3); at the body's cells these are the routed
+        channel values (the body's storage is inside WaterBodies during routing). Writes
+        no water-quantity variable.
+        """
 
         channelTransFrac = pcr.cover(
             pcr.max(
@@ -4487,6 +5535,15 @@ class Routing(object):
             ) * self.FCdecay
 
     def qualityWaterBody(self):
+        """
+        DynQual: mix heat and pollutant loads within each lake/reservoir before routing.
+        Reads WaterBodies.waterBodyOutflow (m3 per day), self.waterBodyStorageTimeBefore
+        (storage before outflow, m3 per body), WaterBodies.waterBodyIds and
+        waterBodyOut, self.dynamicFracWat and cellArea: the body's totals (pcr.areatotal
+        over waterBodyIds) are split into the fraction outflow / storage-before-outflow,
+        released at the outlet cell, and the remainder kept in the body. Writes no
+        water-quantity variable.
+        """
 
         lakeTransFrac = pcr.max(
             pcr.min(
@@ -4937,6 +5994,16 @@ class Routing(object):
             )
 
     def qualityWaterBodyAverage(self, currTimeStep):
+        """
+        DynQual: after routing, average the water-body heat and loads over each body (by
+        cell area) and update ice thickness and water temperature. Reads
+        WaterBodies.waterBodyIds, dynamicFracWat (before and after routing),
+        self.channelStorageNow (copy of the routed storage) and
+        return_water_body_storage_to_channel of that copy. It subtracts ice growth from
+        self.channelStorageNow, a DynQual copy; channelStorage itself is not changed, so
+        ice does not remove water from channels, lakes or reservoirs. Writes no
+        water-quantity variable.
+        """
 
         # water temperature (energy averaged over the water body)
         self.totalVolumeEW = self.volumeEW + self.remainingVolumeEW
@@ -5402,6 +6469,12 @@ class Routing(object):
             )
 
     def estimate_concentrations(self):
+        """
+        DynQual: concentrations from the routed loads, channelStorage (m3) and
+        disChanWaterBody (m3/s, threshold WQ_discharge_threshold); reads water
+        quantities only. With QUAlloc, salinity, organic and pathogen are handed to
+        QUAlloc on the next day (landSurface.py).
+        """
 
         # channel storage with discharge threshold, to estimate in-stream concentrations
         self.channelStorage_Qthres = pcr.ifthenelse(
