@@ -1,0 +1,3 @@
+#!/bin/sh
+# Sensitive-information check (see CONTRIBUTING.md). Enable once per clone: git config core.hooksPath .githooks
+exec python3 "$(dirname "$0")/sensitive_scan.py" commit-msg "$@"

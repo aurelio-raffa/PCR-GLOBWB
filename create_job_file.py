@@ -34,6 +34,7 @@ The generated file is named ``<name>_<YYMMDDHHMM>.lsf`` and is submitted with
 import argparse
 import configparser
 import os
+import subprocess
 import sys
 from datetime import datetime
 
@@ -69,6 +70,29 @@ GLOBAL_OPTIONS_SECTION = 'globalOptions'
 MAX_SPINUPS_KEY = 'maxSpinUpsInYears'
 WITH_MERGING_KEY = 'with_merging'
 CLONE_AREAS_KEY = 'cloneAreas'
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Repo hygiene: the repository is public, so jobs are only generated from clones whose sensitive-information
+# git hooks are enabled (see CONTRIBUTING.md). Runs write real paths next to the code; the hooks keep them out.
+# --------------------------------------------------------------------------------------------------------------
+REQUIRED_GIT_CONFIG = (('core.hooksPath', '.githooks'), ('user.useConfigOnly', 'true'))
+
+
+def _check_repo_hygiene(repo_dir: str = os.path.dirname(os.path.abspath(__file__))) -> None:
+    """Refuse to run unless this clone has the sensitive-information hooks enabled and a configured identity."""
+    missing = []
+    for key, expected in REQUIRED_GIT_CONFIG:
+        value = subprocess.run(['git', '-C', repo_dir, 'config', '--get', key], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, universal_newlines=True).stdout.strip()
+        if value.lower() != expected.lower():
+            missing.append(f'git config {key} {expected}')
+    if missing:
+        raise SystemExit(
+            "This clone does not have the sensitive-information checks enabled (the repository is public).\n"
+            "From the repository root run:\n    " + "\n    ".join(missing) +
+            "\nthen finish the one-time setup in CONTRIBUTING.md (identity and site-pattern file)."
+        )
 
 
 def _read_global_options(ini_path: str) -> dict:
@@ -319,6 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    _check_repo_hygiene()
     DISPATCH[args.mode](args)
 
 
