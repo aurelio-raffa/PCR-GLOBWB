@@ -1,0 +1,39 @@
+# Rescans every fork commit reachable from the pushed (or pull-request) head with the same checker as the git
+# hooks (.githooks/sensitive_scan.py, see CONTRIBUTING.md). The repository is public, so this detects a leak
+# after it was pushed; the client-side hooks are what prevent it. Upstream (UU-Hydro) history is already
+# public and excluded. The site patterns come from the SENSITIVE_PATTERNS Actions secret, and the log reports
+# locations only (--redact), never matched text.
+name: sensitive-scan
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sensitive-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch upstream history (excluded from the scan)
+        run: git fetch --quiet --no-tags https://github.com/UU-Hydro/PCR-GLOBWB_model.git '+refs/heads/*:refs/remotes/upstream/*'
+
+      - name: Scan fork commits
+        env:
+          SENSITIVE_PATTERNS: ${{ secrets.SENSITIVE_PATTERNS }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$SENSITIVE_PATTERNS" ]; then
+            echo "::error::The SENSITIVE_PATTERNS Actions secret is not set or not available to this event"
+            exit 1
+          fi
+          patterns="$RUNNER_TEMP/sensitive-patterns"
+          printf '%s\n' "$SENSITIVE_PATTERNS" > "$patterns"
+          python3 .githooks/sensitive_scan.py --redact --patterns-file "$patterns" \
+            scan-range -- "$HEAD_SHA" --not --remotes=upstream
