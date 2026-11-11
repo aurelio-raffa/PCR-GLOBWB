@@ -10,16 +10,17 @@ from pcrglobwb.common import virtualOS as vos
 from pcrglobwb.ncConverter import PCR2netCDF
 from pcrglobwb.water_demand import main_water_demand as water_demand
 from pcrglobwb.water_management import main_water_management as water_management
-# QUAlloc (src/qualloc/) is imported unconditionally but built and called only when
-# [waterManagementOptions] using_qualloc = True
-# (online_pcrglobwb_qualloc_5arcminutes.ini:159). It replaces
-# water_management.WaterManagement as the allocation scheme.
 from qualloc.model_configuration import configuration_parser
 from qualloc.model_time import model_time
 from qualloc.qualloc_main import qualloc_model
 from qualloc.qualloc_reporting import qualloc_reporting
 
 logger = logging.getLogger(__name__)
+
+# QUAlloc (src/qualloc/, the qualloc imports above) is imported unconditionally but built
+# and called only when [waterManagementOptions] using_qualloc = True
+# (online_pcrglobwb_qualloc_5arcminutes.ini:159). It replaces
+# water_management.WaterManagement as the allocation scheme.
 
 # ANNOTATION OVERVIEW (comments and docstrings only; the code is unchanged). Scope of
 # the annotations in this file: the parts that build or call water demand and water
