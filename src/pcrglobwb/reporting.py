@@ -9,6 +9,33 @@ from pcrglobwb.ncConverter import PCR2netCDF
 
 logger = logging.getLogger(__name__)
 
+# ANNOTATION OVERVIEW (comments and docstrings only; the code is unchanged). Scope: the
+# water-body related variables (lake and reservoir storage and inflow, open-water
+# evaporation, surface-water fraction, abstraction, demands) and how a name in the
+# [reportingOptions] lists becomes an output file.
+#
+# How a variable is reported (the RAWS inis do not set is_sub_run, so the second branch
+# of initiate_reporting is used):
+# 1. At start-up every name in outDailyTotNC (and the other out*NC lists) must be a key
+#    of variable_list.netcdf_short_name, netcdf_unit and netcdf_long_name (plus
+#    netcdf_monthly_total_unit etc. for the *Tot lists); a file
+#    <name>_dailyTot_output.nc (or _monthTot_, _monthAvg_, ...) is created.
+# 2. Every day, after pcrglobwb.PCRGlobWB.update, report() calls post_processing(),
+#    which copies model attributes into attributes of THIS object
+#    (basic_post_processing, additional_post_processing); then the attribute with the
+#    same name as each listed variable is written. A model attribute that is not copied
+#    here cannot be reported, even if it has a variable_list entry.
+# Lists in the RAWS 5-arcmin inis (pcrglobwb_5arcminutes.ini:538-547,
+# online_pcrglobwb_qualloc_5arcminutes.ini:581-590): daily outDailyTotNC includes
+# waterBodyActEvaporation, surfaceWaterStorage, discharge, nonIrrReturnFlow,
+# surfaceWaterInf and irrGrossDemand, but NOT waterBodyStorage,
+# lake_and_reservoir_inflow, surfaceWaterAbstraction, nonIrrGrossDemand or
+# dynamicFracWat; those appear only monthly (surfaceWaterAbstraction and
+# nonIrrGrossDemand in outMonthTotNC; waterBodyStorage and dynamicFracWat in
+# outMonthAvgNC; waterBodyStorage in outMonthEndNC) or not at all
+# (lake_and_reservoir_inflow). All five are set unconditionally below and declared in
+# variable_list.py, so adding them to outDailyTotNC is a configuration-only change.
+
 
 class Reporting(object):
 
@@ -175,6 +202,9 @@ class Reporting(object):
             self.netcdfObj = PCR2netCDF(self.configuration, specificAttributeDictionary)
 
             # netCDF output: daily
+            # (one value per day for every listed variable, states included: for a
+            # state such as waterBodyStorage it is the end-of-day value, for a flux such
+            # as surfaceWaterAbstraction the daily total in the variable's unit)
             self.outDailyTotNC = ["None"]
             try:
                 self.outDailyTotNC = list(
@@ -185,6 +215,12 @@ class Reporting(object):
             if self.outDailyTotNC[0] != "None":
                 for var in self.outDailyTotNC:
 
+                    # EXTENSION POINT: a new daily variable (e.g. a lake and reservoir
+                    # outflow, or a demand signal used by a release scheme) needs (1) a
+                    # Reporting attribute of the same name set in
+                    # additional_post_processing, (2) variable_list entries
+                    # netcdf_short_name, netcdf_unit and netcdf_long_name (KeyError here
+                    # otherwise), and (3) its name in [reportingOptions] outDailyTotNC.
                     logger.info(
                         "Creating the netcdf file for daily reporting for variable %s.",
                         str(var),
@@ -671,6 +707,10 @@ class Reporting(object):
         )
 
         # water demand (m)
+        # CAUTION (M5): these three are SATISFIED (allocated) demands, m/day over the
+        # whole cell at the demand cell (landSurface.LandSurface.update), not potential
+        # demands; they cannot show a shortage. irrGrossDemand is in the daily RAWS set;
+        # nonIrrGrossDemand and totalGrossDemand only in outMonthTotNC.
         self.irrGrossDemand = self._model.landSurface.irrGrossDemand
         self.nonIrrGrossDemand = self._model.landSurface.nonIrrGrossDemand
         self.totalGrossDemand = self._model.landSurface.totalPotentialGrossDemand
@@ -685,6 +725,11 @@ class Reporting(object):
         self.baseflow = self._model.groundwater.baseflow
 
         # abstraction (m)
+        # surfaceWaterAbstraction: landSurface.actSurfaceWaterAbstract, m/day over the
+        # whole cell at the SOURCE cell (standard path or QUAlloc). Per lake or
+        # reservoir: multiply by routing.cellArea (m2) and sum over the body's cells
+        # (waterBodyIds) to get the withdrawal from that body in m3/day. Reported
+        # monthly only in the RAWS inis (outMonthTotNC).
         self.desalinationAbstraction = self._model.landSurface.desalinationAbstraction
         self.surfaceWaterAbstraction = self._model.landSurface.actSurfaceWaterAbstract
         self.nonFossilGroundwaterAbstraction = (
@@ -701,6 +746,8 @@ class Reporting(object):
         )
 
         # total evaporation from land and water fractions (m)
+        # (m/day over the cell: land-surface actualET plus the open-water top-up taken
+        # from channels, lakes and reservoirs, routing.waterBodyEvaporation)
         self.totalEvaporation = (
             self._model.landSurface.actualET + self._model.routing.waterBodyEvaporation
         )
@@ -720,6 +767,11 @@ class Reporting(object):
         self.runoff = self._model.routing.runoff
 
         # discharge (m3/s)
+        # routing.disChanWaterBody: on lake and reservoir cells the MAXIMUM discharge
+        # over the body's cells (routing.Routing.simple_update), elsewhere the cell
+        # discharge; it is not the water-body outflow, which is not reported (it can be
+        # derived exactly from lake_and_reservoir_inflow and waterBodyStorage with daily
+        # calls).
         self.discharge = self._model.routing.disChanWaterBody
 
         # soil moisture of (approximately) the upper 5 cm of soil
@@ -730,6 +782,12 @@ class Reporting(object):
             self.satDegUppSurface = self._model.landSurface.satDegUpp000005
 
         # fraction of surface water bodies
+        # (dimensionless, per cell: lake/reservoir fraction plus channel and flooded
+        # fraction, routing.Routing.update). Under simplifiedKinematicWave (both RAWS
+        # 5-arcmin inis) routing overwrites it in every sub-step, so the reported value
+        # is the last sub-step's, not the start-of-day value used for that day's
+        # open-water evaporation (re-check note, section C). Monthly only in the RAWS
+        # inis (outMonthAvgNC).
         self.dynamicFracWat = self._model.routing.dynamicFracWat
 
         if self._model.landSurface.numberOfSoilLayers == 3:
@@ -795,6 +853,10 @@ class Reporting(object):
             )
 
         # local changes in water bodies (abstraction, return flow, evaporation, bed exchange), excluding runoff
+        # (m/day over the cell: routing.local_input_to_surface_water / cellArea minus
+        # runoff, i.e. return flow - abstraction - open-water evaporation - riverbed
+        # infiltration; positive or negative; excludes upstream inflow and water-body
+        # outflow)
         self.local_water_body_flux = (
             self._model.routing.local_input_to_surface_water
             / self._model.routing.cellArea
@@ -806,6 +868,11 @@ class Reporting(object):
         self.totalRunoff = self.runoff + self.local_water_body_flux
 
         # water body evaporation from surface water fractions only (m)
+        # (evaporation FROM the surface-water fraction, but expressed in m/day over the
+        # WHOLE cell area; per lake or reservoir: multiply by cellArea and sum over the
+        # body's cells. Actual = top-up max(0, kc * ET0 - actualET) * dynamicFracWat,
+        # capped by the channel storage; taken before the release rule of the same day.
+        # waterBodyActEvaporation is in the daily RAWS set.)
         self.waterBodyActEvaporation = self._model.routing.waterBodyEvaporation
         self.waterBodyPotEvaporation = self._model.routing.waterBodyPotEvap
 
@@ -863,6 +930,10 @@ class Reporting(object):
         )
 
         # surface water storage (m); may be negative
+        # CAUTION: see M16. routing.Routing clips channelStorage at 0 at the end of its
+        # update ("reported channel storage cannot be negative"), so at reporting time
+        # this value is not negative in this revision. m over the whole cell; at lake
+        # and reservoir cells it includes the water-body storage spread by cell area.
         self.surfaceWaterStorage = (
             self._model.routing.channelStorage / self._model.routing.cellArea
         )
@@ -928,6 +999,13 @@ class Reporting(object):
         )
 
         # Stefanie: lake and reservoir storage (m3), after lake/reservoir outflow
+        # INTERFACE: waterBodies.WaterBodies.waterBodyStorage, end of the day after the
+        # release, 0 outside water bodies.
+        # CAUTION (M15): the value is the TOTAL storage of the lake or reservoir
+        # repeated on every cell of the body (pcr.areatotal per waterBodyIds), so
+        # summing over cells multiplies it by the number of cells; take one cell per
+        # body (e.g. the outlet). Not in the daily RAWS set (outMonthAvgNC and
+        # outMonthEndNC only).
         self.waterBodyStorage = pcr.ifthen(
             self._model.routing.landmask,
             pcr.cover(
@@ -942,6 +1020,8 @@ class Reporting(object):
         self.snowMelt = self._model.landSurface.snowMelt
 
         # (m3)
+        # (per cell, end of day; at lake and reservoir cells the water-body storage
+        # spread by cell area plus the channel water left on those cells)
         self.channelStorage = pcr.ifthen(
             self._model.routing.landmask,
             pcr.cover(self._model.routing.channelStorage, 0.0),
@@ -1156,6 +1236,9 @@ class Reporting(object):
         )
 
         # gross demands of the domestic, industry, livestock, manufacturing and thermoelectric sectors (m/day)
+        # (POTENTIAL gross demands as read from the demand files, m/day over the cell at
+        # the demand cell; unlike irrGrossDemand / nonIrrGrossDemand these are not
+        # limited by availability. There is no reportable potential irrigation demand.)
         self.domesticGrossDemand = pcr.ifthen(
             self._model.routing.landmask,
             self._model.landSurface.water_demand.water_demand_domestic.domesticGrossDemand,
@@ -1264,6 +1347,23 @@ class Reporting(object):
         )
 
         # fluxes from water bodies (lakes and reservoirs) (m3/s)
+        # INTERFACE: waterBodies.WaterBodies.inflowInM3PerSec = (storage moved in from
+        # the body's cells this step - storage at the end of the previous step) / step
+        # length. It is a NET residual: upstream water routed into the body on the
+        # previous day plus today's local runoff, baseflow and return flow on the body's
+        # cells, minus today's abstraction (surfaceWaterAbstraction) and open-water
+        # evaporation on those cells, minus the previous day's riverbed infiltration. It
+        # can be negative.
+        # CAUTION (M15): like waterBodyStorage, the value is per body repeated on every
+        # cell of the body; elsewhere it is 0. With routing calls once per day (both
+        # RAWS inis) it is the daily value; with kinematicWave it would be the last
+        # sub-step's. Not in any RAWS reporting list.
+        # EXTENSION POINT: a lake and reservoir outflow (m3/s) or a per-body withdrawal
+        # would be added here in the same way (a Reporting attribute plus a
+        # variable_list entry, see the note in initiate_reporting). The outflow could be
+        # taken from routing.WaterBodies.waterBodyOutflow (m3 per step, per body)
+        # divided by the step length; with daily calls it also equals inflow * 86400 -
+        # (S_t - S_t-1).
         self.lake_and_reservoir_inflow = (
             self._model.routing.WaterBodies.inflowInM3PerSec
         )
@@ -1290,6 +1390,12 @@ class Reporting(object):
             )
 
     def report(self):
+        """Write the variables of the current day (called once per day by the runner,
+        after pcrglobwb.PCRGlobWB.update). Daily variables are masked with
+        landmask_for_reporting (in place) and written one value per day; monthly and
+        yearly totals and averages are accumulated here and written at the end of the
+        period.
+        """
         self.post_processing()
 
         # time stamp for reporting
@@ -1695,6 +1801,18 @@ class Reporting(object):
         # state variables in kg m-2 (*1000 converts m to kg m-2)
         self.SWE = self._model.landSurface.snowCoverSWE * 1000
         self.CanopInt = self._model.landSurface.interceptStor * 1000
+        # CAUTION (M20): SurfStor (declared in variable_list.py with unit "kg m-2") adds
+        # three terms: topWaterLayer (m), channelStorage / cellArea (m) and
+        # WaterBodies.waterBodyStorage, which is in m3 (the total storage of the lake or
+        # reservoir, repeated on every cell of the body) and is not divided by any area.
+        # (1) Unit error: m3 is added to m, then multiplied by 1000. (2) Double
+        # counting: at the time of reporting routing.channelStorage already contains the
+        # water-body storage spread over the body's cells
+        # (routing.Routing.return_water_body_storage_to_channel). (3) The inner
+        # pcr.ifthen has no cover, so the sum is a missing value on every cell outside
+        # lakes and reservoirs. Same expression on upstream master (reporting.py). Not
+        # in any RAWS reporting list; do not use it for water-body storage (use
+        # waterBodyStorage, m3, one cell per body).
         self.SurfStor = (
             self._model.landSurface.topWaterLayer
             + (self._model.routing.channelStorage / self._model.routing.cellArea)

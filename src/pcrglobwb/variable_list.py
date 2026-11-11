@@ -1,3 +1,13 @@
+# ANNOTATION OVERVIEW (comments only; the code is unchanged). Scope: entries of
+# water-body related variables. Each entry below fills, for one variable name, the
+# dictionaries used by reporting.Reporting to create its netCDF file. An entry alone
+# does not make a variable reportable: reporting.py must also set a Reporting attribute
+# of the same name (post-processing), and the name must be listed in [reportingOptions]
+# (outDailyTotNC, outMonthTotNC, outMonthAvgNC, ...). For daily output only
+# netcdf_short_name, netcdf_unit and netcdf_long_name are used; the *_total_unit
+# dictionaries are used by the weekly, monthly and yearly TOTAL lists. Units: "m.day-1"
+# is a water height over the WHOLE cell area per day (multiply by the cell area, m2, to
+# get m3/day); "m3" and "m3.s-1" are per cell or per water body as noted.
 netcdf_short_name = {}
 netcdf_unit = {}
 netcdf_weekly_total_unit = {}
@@ -398,6 +408,9 @@ comment[pcrglobwb_variable_name] = "nncluding "
 latex_symbol[pcrglobwb_variable_name] = None
 pcr_short_name[pcrglobwb_variable_name] = None
 
+# CAUTION (M5): irrGrossDemand, nonIrrGrossDemand and totalGrossDemand are reported
+# from SATISFIED (allocated) demands (landSurface.LandSurface.update), not from the
+# potential demand; their names and the "gross_demand" short names suggest otherwise.
 pcrglobwb_variable_name = "irrGrossDemand"
 netcdf_short_name[pcrglobwb_variable_name] = "irrigation_gross_demand"
 netcdf_unit[pcrglobwb_variable_name] = "m.day-1"
@@ -431,6 +444,10 @@ description[pcrglobwb_variable_name] = None
 comment[pcrglobwb_variable_name] = None
 latex_symbol[pcrglobwb_variable_name] = None
 
+# domesticGrossDemand, industryGrossDemand, livestockGrossDemand, manufactureGrossDemand
+# and thermoelectricGrossDemand ARE potential gross demands (input files, m/day over the
+# cell, at the demand cell). Declared and set in reporting.py, but not in the RAWS
+# reporting lists.
 pcrglobwb_variable_name = "domesticGrossDemand"
 netcdf_short_name[pcrglobwb_variable_name] = "domestic_gross_demand"
 netcdf_unit[pcrglobwb_variable_name] = "m.day-1"
@@ -599,6 +616,12 @@ description[pcrglobwb_variable_name] = None
 comment[pcrglobwb_variable_name] = "Non fossil and fossil groundwater storage."
 latex_symbol[pcrglobwb_variable_name] = None
 
+# surfaceWaterAbstraction: landSurface.actSurfaceWaterAbstract, at the SOURCE cell
+# (where the water is taken, lake and reservoir cells included), m/day over the cell.
+# Five daily series needed for the reservoir integration (re-check note):
+# lake_and_reservoir_inflow, waterBodyStorage, surfaceWaterAbstraction,
+# nonIrrGrossDemand and dynamicFracWat are all declared here and set in reporting.py;
+# none is in the daily RAWS list (outDailyTotNC), which is the only change needed.
 pcrglobwb_variable_name = "surfaceWaterAbstraction"
 netcdf_short_name[pcrglobwb_variable_name] = "surface_water_abstraction"
 netcdf_unit[pcrglobwb_variable_name] = "m.day-1"
@@ -767,6 +790,9 @@ comment[pcrglobwb_variable_name] = (
 )
 latex_symbol[pcrglobwb_variable_name] = None
 
+# waterBodyActEvaporation: routing.waterBodyEvaporation, open-water evaporation of
+# channels, lakes and reservoirs (the top-up over the land-surface ET), m/day over the
+# whole cell. In the daily RAWS list.
 pcrglobwb_variable_name = "waterBodyActEvaporation"
 netcdf_short_name[pcrglobwb_variable_name] = "water_body_actual_evaporation"
 netcdf_unit[pcrglobwb_variable_name] = "m.day-1"
@@ -879,6 +905,8 @@ description[pcrglobwb_variable_name] = None
 comment[pcrglobwb_variable_name] = None
 latex_symbol[pcrglobwb_variable_name] = None
 
+# discharge: routing.disChanWaterBody (m3/s). On lake and reservoir cells it is the
+# maximum discharge over the body's cells, not the water-body outflow.
 pcrglobwb_variable_name = "discharge"
 netcdf_short_name[pcrglobwb_variable_name] = "discharge"
 netcdf_unit[pcrglobwb_variable_name] = "m3.s-1"
@@ -901,6 +929,8 @@ description[pcrglobwb_variable_name] = None
 comment[pcrglobwb_variable_name] = "Including local changes at water bodies."
 latex_symbol[pcrglobwb_variable_name] = None
 
+# local_water_body_flux: return flow - abstraction - open-water evaporation - riverbed
+# infiltration, m/day over the cell (reporting.py); totalRunoff = runoff + this flux.
 pcrglobwb_variable_name = "local_water_body_flux"
 netcdf_short_name[pcrglobwb_variable_name] = "local_water_body_flux"
 netcdf_unit[pcrglobwb_variable_name] = "m.day-1"
@@ -967,6 +997,10 @@ description[pcrglobwb_variable_name] = None
 comment[pcrglobwb_variable_name] = "Including fossil groundwater."
 latex_symbol[pcrglobwb_variable_name] = None
 
+# CAUTION (M16): the comment of this entry says negative values may be reported, but
+# routing clips channelStorage at 0 at the end of its update in this revision.
+# surfaceWaterStorage = routing.channelStorage / cellArea (m over the cell), which at
+# lake and reservoir cells includes the water-body storage spread by cell area.
 pcrglobwb_variable_name = "surfaceWaterStorage"
 netcdf_short_name[pcrglobwb_variable_name] = "surface_water_storage"
 netcdf_unit[pcrglobwb_variable_name] = "m"
@@ -980,6 +1014,10 @@ comment[pcrglobwb_variable_name] = (
 )
 latex_symbol[pcrglobwb_variable_name] = None
 
+# CAUTION (M15): "for every lake and reservoir ids (not per cells)" below means that the
+# value is the TOTAL storage of the body, but it is written on EVERY cell of the body
+# (0 outside water bodies). Summing the field over cells overcounts; take one cell per
+# body. End-of-day storage after the release (m3). Not in the daily RAWS list.
 pcrglobwb_variable_name = "waterBodyStorage"
 netcdf_short_name[pcrglobwb_variable_name] = "lake_and_reservoir_storage"
 netcdf_unit[pcrglobwb_variable_name] = "m3"
@@ -1171,6 +1209,9 @@ comment[pcrglobwb_variable_name] = "Excluding surface water bodies."
 latex_symbol[pcrglobwb_variable_name] = None
 
 # fraction of surface water
+# dynamicFracWat: routing.dynamicFracWat (dimensionless, per cell). Under
+# simplifiedKinematicWave the reported value is the last routing sub-step's (see
+# reporting.py). Monthly average only in the RAWS lists.
 pcrglobwb_variable_name = "dynamicFracWat"
 netcdf_short_name[pcrglobwb_variable_name] = "fraction_of_surface_water"
 netcdf_unit[pcrglobwb_variable_name] = "1"
@@ -1182,6 +1223,8 @@ description[pcrglobwb_variable_name] = None
 comment[pcrglobwb_variable_name] = "Fraction of surface water over the cell area."
 latex_symbol[pcrglobwb_variable_name] = None
 
+# CAUTION (M17): declared here but never set as a Reporting attribute in reporting.py,
+# so listing it in [reportingOptions] fails at the first report (attribute missing).
 pcrglobwb_variable_name = "totalPotentialMaximumGrossDemand"
 netcdf_short_name[pcrglobwb_variable_name] = "totalPotentialMaximumGrossDemand"
 netcdf_unit[pcrglobwb_variable_name] = "m.day-1"
@@ -1529,6 +1572,12 @@ description[pcrglobwb_variable_name] = None
 comment[pcrglobwb_variable_name] = None
 latex_symbol[pcrglobwb_variable_name] = None
 
+# lake_and_reservoir_inflow: waterBodies.WaterBodies.inflowInM3PerSec, the NET inflow
+# residual of each lake or reservoir (m3/s), repeated on every cell of the body, 0
+# elsewhere (see reporting.py). Not in any RAWS reporting list.
+# CAUTION (M15): netcdf_unit "m3.s" below should read "m3.s-1" (unit string only; the
+# values are m3/s). The *_total_unit entries are None, so use it in outDailyTotNC or
+# outMonthAvgNC, not in the TOTAL lists.
 pcrglobwb_variable_name = "lake_and_reservoir_inflow"
 netcdf_short_name[pcrglobwb_variable_name] = pcrglobwb_variable_name
 netcdf_unit[pcrglobwb_variable_name] = "m3.s"
@@ -1882,6 +1931,9 @@ description[pcrglobwb_variable_name] = (
 comment[pcrglobwb_variable_name] = None
 latex_symbol[pcrglobwb_variable_name] = None
 
+# CAUTION (M20): SurfStor as computed in reporting.py (e2o_post_processing) adds the
+# lake and reservoir storage in m3 to heights in m and double counts it (it is already
+# in channelStorage); see the comment there.
 pcrglobwb_variable_name = "SurfStor"
 netcdf_short_name[pcrglobwb_variable_name] = "SurfStor"
 netcdf_unit[pcrglobwb_variable_name] = "kg m-2"
